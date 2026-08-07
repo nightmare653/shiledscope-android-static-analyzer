@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ShieldScope — APK/IPA root &amp; SSL-pinning analyzer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🛡️</span>
+      <div>
+        <h1>ShieldScope</h1>
+        <p class="tag">Static root/jailbreak &amp; SSL-pinning analysis for APK &amp; IPA — with step-by-step bypass guides</p>
+      </div>
+    </div>
+    <div class="authnote">For authorized testing only · your own apps, scoped pentests, CTF, permitted bug bounty</div>
+  </header>
+
+  <main>
+    <!-- Upload -->
+    <section id="drop" class="dropzone">
+      <input type="file" id="file" accept=".apk,.ipa,.ab,.tar,.gz,.tgz,.zip,.db,.sqlite,.xml" hidden>
+      <div class="dz-inner">
+        <div class="dz-icon">📦</div>
+        <p class="dz-title">Drop an <strong>.apk</strong> / <strong>.ipa</strong> — or extracted data (<strong>.ab</strong> / <strong>.tar</strong> / <strong>.zip</strong>)</p>
+        <p class="dz-sub">App file → root/pinning + config/secret analysis. &nbsp;·&nbsp; Pulled data dir (adb backup / run-as) → offline shared_prefs &amp; DB scan.</p>
+        <p class="dz-sub">or <button id="browse" class="link">browse</button> — nothing leaves your machine</p>
+        <p id="filename" class="filename"></p>
+        <button id="analyze" class="btn" disabled>Analyze</button>
+      </div>
+    </section>
+
+    <div id="status" class="status hidden"></div>
+
+    <!-- Results -->
+    <section id="results" class="results hidden"></section>
+  </main>
+
+  <footer>
+    <span>ShieldScope</span> · static analyzer · androguard + LIEF · Frida/objection bypass playbooks
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

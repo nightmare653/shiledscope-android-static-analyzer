@@ -1,0 +1,4 @@
+Flask>=3.0
+flask-cors>=4.0
+androguard>=4.1
+lief>=0.14
