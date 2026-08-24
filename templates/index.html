@@ -18,6 +18,32 @@
     <div class="authnote">For authorized testing only · your own apps, scoped pentests, CTF, permitted bug bounty</div>
   </header>
 
+  <!-- Optional AI assist (off by default; bring your own local or cloud model) -->
+  <details class="aibar" id="aibar">
+    <summary>🤖 AI assist <span id="aiStatus" class="aistatus">off</span></summary>
+    <div class="aibody">
+      <p class="aihint">Optional. Point ShieldScope at your own model — local (Ollama / LM Studio) or cloud (Anthropic / OpenAI / any OpenAI-compatible). Nothing is sent unless you enable it and click Analyze on a finding.</p>
+      <div class="airow">
+        <label>Provider
+          <select id="aiProvider">
+            <option value="off">off</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="lmstudio">LM Studio (local)</option>
+            <option value="openai-compatible">OpenAI-compatible (local/self-host)</option>
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI</option>
+          </select>
+        </label>
+        <label>Base URL <input id="aiBaseUrl" placeholder="http://localhost:11434/v1"></label>
+        <label>Model <input id="aiModel" placeholder="llama3.1 / claude-sonnet-5 / …"></label>
+        <label>API key <input id="aiKey" type="password" placeholder="(local: leave blank)"></label>
+        <label>Timeout (s) <input id="aiTimeout" type="number" placeholder="300" style="min-width:80px"></label>
+        <button id="aiSave" class="mini">Save &amp; test</button>
+      </div>
+      <div id="aiMsg" class="aimsg"></div>
+    </div>
+  </details>
+
   <main>
     <!-- Upload -->
     <section id="drop" class="dropzone">
@@ -41,6 +67,22 @@
   <footer>
     <span>ShieldScope</span> · static analyzer · androguard + LIEF · Frida/objection bypass playbooks
   </footer>
+
+  <!-- AI chatbot (uses your configured model; grounded in the current analysis) -->
+  <button id="chatFab" class="chatfab" title="Ask the AI about this app">💬</button>
+  <div id="chatPanel" class="chatpanel hidden">
+    <div class="chathead">
+      <span>🤖 Ask ShieldScope AI</span>
+      <button id="chatClose" class="chatx">×</button>
+    </div>
+    <div id="chatBody" class="chatbody">
+      <div class="chatmsg bot">Ask me about this app — findings, endpoints, how to exploit or fix something — or general mobile-security questions.</div>
+    </div>
+    <div class="chatinput">
+      <textarea id="chatText" rows="2" placeholder="e.g. what's the most critical issue and how do I test it?"></textarea>
+      <button id="chatSend" class="mini">Send</button>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

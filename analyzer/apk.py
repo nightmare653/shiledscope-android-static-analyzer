@@ -13,6 +13,14 @@ constants are stored as plain (M)UTF-8.
 import zipfile
 import warnings
 
+# androguard 4.x logs verbosely through loguru; silence it so it doesn't flood
+# the server stdout during analysis.
+try:
+    from loguru import logger as _loguru_logger
+    _loguru_logger.remove()
+except Exception:
+    pass
+
 from . import signatures as S
 from . import masvs
 from . import storage

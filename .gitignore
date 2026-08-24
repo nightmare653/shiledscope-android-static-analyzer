@@ -1,0 +1,19 @@
+# AI provider config — may contain an API key
+ai_config.json
+
+# runtime uploads (user-supplied APK/IPA)
+uploads/
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# crash logs
+hs_err_pid*.log
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+venv/

@@ -7,7 +7,7 @@
 
   // ---- file selection ----
   browse.addEventListener("click", (e) => { e.preventDefault(); fileInput.click(); });
-  drop.addEventListener("click", (e) => { if (e.target.id !== "browse") fileInput.click(); });
+  drop.addEventListener("click", (e) => { if (e.target.closest("button")) return; fileInput.click(); });
   fileInput.addEventListener("change", () => setFile(fileInput.files[0]));
   ["dragover", "dragenter"].forEach(ev =>
     drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add("drag"); }));
@@ -92,9 +92,13 @@
           </div>
         </div>
         ${signingMini(d.signing)}
+        ${engineMini(d)}
       </div>
     </div>
-    ${exportBar()}`;
+    ${exportBar()}
+    <div class="aiplan"><button class="mini" id="aiPlan">🤖 AI pentest plan</button>
+      <span class="aiplanhint">Uses your configured model to turn these findings into a prioritised attack plan.</span>
+      <div id="aiPlanOut"></div></div>`;
 
     // framework notes
     if (d.frameworks && d.frameworks.length) {
@@ -116,6 +120,9 @@
 
     // IPC attack surface (exported components + PoC)
     html += ipcBlock(d.ipc || []);
+
+    // API endpoints + per-endpoint pentest playbooks
+    html += apiBlock(d.api);
 
     // network attack surface (URLs / buckets / IPs)
     html += surfaceBlock(d.surface);
@@ -141,6 +148,8 @@
     wireFrida(d.frida);
     wireIpc();
     wireExport(d);
+    lastResult = d;
+    wireAI(d);
     resultsEl.classList.remove("hidden");
     resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -154,6 +163,16 @@
       <span>🔑 Signing: <b>${esc(scheme)}</b> · ${esc(key)}${flag}</span>
       ${s.subject ? `<div class="signsub">${esc(s.subject)}</div>` : ""}
     </div>`;
+  }
+
+  function engineMini(d) {
+    const o = d.obfuscation, s = d.stats || {};
+    if (!o && !s.files_scanned) return "";
+    const bits = [];
+    if (o) bits.push(`🧩 Obfuscation: <b>${esc(o.level)}</b> (${esc(String(o.ratio))})`);
+    if (s.files_scanned) bits.push(`🔬 ${esc(String(s.files_scanned))} files scanned`);
+    if (s.nested_archives) bits.push(`📦 ${esc(String(s.nested_archives))} nested archive(s)`);
+    return `<div class="signrow" style="font-size:12.5px">${bits.join(" · ")}</div>`;
   }
 
   function ipcBlock(rows) {
@@ -170,6 +189,41 @@
           <td class="poc"><code>${esc(r.poc)}</code><button class="mini cpoc" data-poc="${esc(r.poc)}">copy</button></td>
         </tr>`).join("")}</tbody>
       </table></div></div>`;
+  }
+
+  function apiBlock(api) {
+    if (!api || !api.endpoints || !api.endpoints.length) return "";
+    const c = api.counts || {};
+    const sens = api.endpoints.filter(e => (e.severity === "high" || e.severity === "medium") && e.category !== "third-party");
+    const rest = api.endpoints.filter(e => !sens.includes(e));
+    const card = e => {
+      const steps = (e.tests || []).map(t => `<li>${fmtStep(t)}</li>`).join("");
+      const extra = [];
+      if (e.payload) extra.push(`<div class="frow"><span class="fk">Payload / technique</span><span class="fv"><code>${esc(e.payload)}</code></span></div>`);
+      if (e.tool) extra.push(`<div class="frow"><span class="fk">Tool</span><span class="fv">${esc(e.tool)}</span></div>`);
+      return `<details class="finding sev-${esc(e.severity)}">
+        <summary>
+          <span class="fname">${esc(e.value)}</span>
+          <span class="badges"><span class="badge sevb ${esc(e.severity)}">${esc(e.severity)}</span>
+          <span class="badge layer">${esc(e.category_name)}</span>
+          <span class="badge">${esc(e.kind)}</span></span>
+        </summary>
+        <div class="fbody">
+          <div class="frow"><span class="fk">Why it matters</span><span class="fv">${esc(e.why)}</span></div>
+          ${steps ? `<div class="frow"><span class="fk">How to test</span><span class="fv"><ol class="steps">${steps}</ol></span></div>` : ""}
+          ${extra.join("")}
+        </div>
+      </details>`;
+    };
+    let h = `<div class="block"><h2>🎯 API endpoints &amp; attack surface (${c.total || api.endpoints.length}${c.sensitive ? `, ${c.sensitive} sensitive` : ""})</h2>
+      <p class="lead">Endpoints harvested from the app (URLs + relative API paths, including ones built from a base URL). Sensitive ones carry a test playbook. Static leads — verify with an intercepting proxy on an authorized target.</p>`;
+    if (sens.length) h += sens.map(card).join("");
+    if (rest.length) {
+      const list = rest.map(e => `${e.severity === "info" ? "·" : "•"} [${esc(e.category_name)}] ${esc(e.value)}`).join("\n");
+      h += `<details class="guide"><summary><span class="gtitle">Other endpoints &amp; third-party (${rest.length})</span></summary>
+        <div class="gbody"><pre class="frscript">${esc(list)}</pre></div></details>`;
+    }
+    return h + `</div>`;
   }
 
   function surfaceBlock(s) {
@@ -193,7 +247,36 @@
       <button class="mini" id="exHtml">⬇ HTML</button>
       <button class="mini" id="exJson">⬇ JSON</button>
       <button class="mini" id="exSarif">⬇ SARIF</button>
+      <button class="mini" id="exBurp">⬇ Burp scope</button>
+      <button class="mini" id="exTargets">⬇ Targets</button>
     </div>`;
+  }
+
+  // hosts from harvested endpoints + surface, for a proxy scope
+  function collectHosts(d) {
+    const hosts = new Set();
+    const add = u => { try { const h = new URL(u).hostname; if (h) hosts.add(h); } catch (e) {} };
+    ((d.api && d.api.endpoints) || []).forEach(e => { if (e.kind === "url") add(e.value); });
+    ((d.surface && d.surface.urls) || []).forEach(add);
+    return [...hosts].sort();
+  }
+  function buildBurpScope(d) {
+    const esc = h => "^" + h.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "$";
+    const include = collectHosts(d).map(h => ({ enabled: true, host: esc(h), protocol: "any" }));
+    return { target: { scope: { advanced_mode: true, include, exclude: [] } } };
+  }
+  function buildTargets(d) {
+    const lines = [];
+    lines.push("# ShieldScope targets — " + (d.file ? d.file.name : "app") + " (authorized testing only)");
+    const eps = (d.api && d.api.endpoints) || [];
+    const sens = eps.filter(e => (e.severity === "high" || e.severity === "medium") && e.category !== "third-party");
+    if (sens.length) { lines.push("\n## sensitive endpoints"); sens.forEach(e => lines.push(`[${e.category_name}] ${e.value}`)); }
+    const urls = eps.filter(e => e.kind === "url" && e.category !== "third-party").map(e => e.value);
+    if (urls.length) { lines.push("\n## api urls"); [...new Set(urls)].forEach(u => lines.push(u)); }
+    const paths = eps.filter(e => e.kind === "path").map(e => e.value);
+    if (paths.length) { lines.push("\n## relative paths (append to a base host)"); [...new Set(paths)].forEach(p => lines.push(p)); }
+    lines.push("\n## hosts (scope)"); collectHosts(d).forEach(h => lines.push(h));
+    return lines.join("\n");
   }
 
   function mechBlock(title, cls, bucket, isApk) {
@@ -280,6 +363,17 @@
       sorted.map(f => renderFinding(f, f.severity === "high" ? "open" : openBig)).join("") + `</div>`;
   }
 
+  function jwtRow(j) {
+    const issues = (j.issues || []).map(i => `<li>${esc(i)}</li>`).join("");
+    const claims = esc(JSON.stringify(j.claims || {}, null, 1));
+    const exp = j.expired === true ? "expired" : j.expired === false ? "not expired" : "no exp";
+    return `<div class="frow"><span class="fk">JWT decoded</span><span class="fv">
+      <div><span class="badge layer">alg ${esc(j.alg)}</span> <span class="badge layer">${esc(exp)}</span>
+      ${(j.sensitive_claims||[]).length ? `<span class="badge medium">claims: ${esc(j.sensitive_claims.join(", "))}</span>` : ""}</div>
+      ${issues ? `<ul class="steps" style="margin-top:6px">${issues}</ul>` : ""}
+      <pre class="fev" style="margin-top:6px">${claims}</pre></span></div>`;
+  }
+
   function renderFinding(f, open) {
     const steps = (f.reproduce || []).map(s => `<li>${fmtStep(s)}</li>`).join("");
     const ev = f.evidence ? `<div class="frow"><span class="fk">Evidence</span>
@@ -295,10 +389,12 @@
       <div class="fbody">
         ${row("Location", f.location ? `<code>${esc(f.location)}</code>` : "")}
         ${ev}
+        ${f.jwt ? jwtRow(f.jwt) : ""}
         ${row("Description", esc(f.description || ""))}
         ${row("Risk", esc(f.risk || ""))}
         ${steps ? `<div class="frow"><span class="fk">Steps to reproduce</span><span class="fv"><ol class="steps">${steps}</ol></span></div>` : ""}
         ${row("Mitigation", esc(f.mitigation || ""))}
+        <div class="ai-f"><button class="mini ai-analyze" data-fid="${esc(f.id)}">🤖 Analyze &amp; PoC</button><div class="ai-out"></div></div>
       </div>
     </details>`;
   }
@@ -317,12 +413,66 @@
         <button class="mini" id="copyfrida">Copy script</button>
       </div>
       <pre class="frscript" id="frscript">${esc(fr.script)}</pre>
+      <div class="fdyn ai-f">
+        <h3>Dynamic — run &amp; AI bypass agent</h3>
+        <p class="lead">Runs on a connected device/emulator (frida-server required). The AI agent writes its own scripts, runs them, and iterates — with Flutter-specific strategies.</p>
+        <div class="frbar">
+          <select id="fdevice"><option value="">(default USB)</option></select>
+          <button class="mini" id="frunScript">▶ Run this script on device</button>
+          <button class="mini" id="faiAgent">🤖 AI bypass agent</button>
+        </div>
+        <div id="fdynOut"></div>
+      </div>
     </div>`;
+  }
+
+  function renderRun(o) {
+    if (!o) return "";
+    if (o.error && !o.iterations) return `<div class='aierr'>${esc(o.error)}</div>`;
+    if (o.iterations) {
+      const iters = o.iterations.map(it => {
+        const con = (it.run.console || []).slice(0, 20).join("\n");
+        return `<details class="guide"><summary><span class="gtitle">Iteration ${it.iter} — ${esc(it.verdict)}</span></summary>
+          <div class="gbody">
+            ${it.run.errors && it.run.errors.length ? `<div class='aierr'>${esc(it.run.errors.join("\n"))}</div>` : ""}
+            <h4>Console</h4><pre class="frscript">${esc(con || "(none)")}</pre>
+            <h4>Script</h4><pre class="frscript">${esc(it.script)}</pre>
+          </div></details>`;
+      }).join("");
+      return `<div class="${o.confirmed ? "aiout" : "frwarn"}" style="margin:8px 0">
+        ${o.confirmed ? "✓ hooks installed" : "· not confirmed yet"}${o.flutter ? " · Flutter mode" : ""}. ${esc(o.note || "")}</div>${iters}`;
+    }
+    // single run
+    const con = (o.console || []).join("\n");
+    return `<div class="${o.ok ? "aiout" : "frwarn"}" style="margin:8px 0">${o.ok ? "✓ loaded" : "· "+esc(o.error||"failed")}${(o.markers||[]).length ? " — "+esc(o.markers.join(" | ")) : ""}</div>
+      ${con ? `<pre class="frscript">${esc(con)}</pre>` : ""}`;
   }
 
   function wireFrida(fr) {
     if (!fr || !fr.script) return;
     const dl = $("#dlfrida"), cf = $("#copyfrida"), cc = $("#copycmd");
+    // dynamic: device list + run + AI agent
+    const dev = $("#fdevice"), runBtn = $("#frunScript"), agent = $("#faiAgent"), out = $("#fdynOut");
+    if (dev) fetch("/api/ai/frida/devices").then(r => r.json()).then(j => {
+      (j.devices || []).forEach(d => { const o = document.createElement("option"); o.value = d.id; o.textContent = `${d.name} (${d.type})`; dev.appendChild(o); });
+    }).catch(() => {});
+    const pkg = () => (lastResult && lastResult.meta && lastResult.meta.package) || "";
+    if (runBtn) runBtn.onclick = async () => {
+      out.innerHTML = "<span class='spinner'></span> injecting…";
+      try {
+        const r = await (await fetch("/api/ai/frida/run", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ package: pkg(), script: fr.script, device_id: dev.value }) })).json();
+        out.innerHTML = renderRun(r);
+      } catch (e) { out.innerHTML = `<div class='aierr'>${esc(String(e))}</div>`; }
+    };
+    if (agent) agent.onclick = async () => {
+      out.innerHTML = "<span class='spinner'></span> AI agent working (writing, running, refining)…";
+      try {
+        const r = await (await fetch("/api/ai/frida/bypass", { method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ result: lastResult, package: pkg(), goal: "ssl", device_id: dev.value }) })).json();
+        out.innerHTML = r.enabled === false ? "<div class='aierr'>Configure an AI model above first.</div>" : renderRun(r);
+      } catch (e) { out.innerHTML = `<div class='aierr'>${esc(String(e))}</div>`; }
+    };
     if (dl) dl.onclick = () => {
       const blob = new Blob([fr.script], { type: "application/javascript" });
       const a = document.createElement("a");
@@ -358,6 +508,9 @@
     if (j) j.onclick = () => download(baseName(d) + ".json", JSON.stringify(d, null, 2), "application/json");
     if (s) s.onclick = () => download(baseName(d) + ".sarif", JSON.stringify(buildSarif(d), null, 2), "application/json");
     if (h) h.onclick = () => download(baseName(d) + ".html", buildHtmlReport(d), "text/html");
+    const b = $("#exBurp"), t = $("#exTargets");
+    if (b) b.onclick = () => download(baseName(d) + "_burp_scope.json", JSON.stringify(buildBurpScope(d), null, 2), "application/json");
+    if (t) t.onclick = () => download(baseName(d) + "_targets.txt", buildTargets(d), "text/plain");
   }
 
   function allFindings(d) {
@@ -473,6 +626,153 @@ ${(d.ipc && d.ipc.length) ? `<h2>Exported IPC (${d.ipc.length})</h2><table><tr><
     return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   }
 
+  // ===================================================================
+  //  Optional AI assist (additive; deterministic engine is unaffected)
+  // ===================================================================
+  let lastResult = null, aiEnabled = false;
+
+  async function initAI() {
+    const prov = $("#aiProvider"), base = $("#aiBaseUrl"), model = $("#aiModel"),
+          key = $("#aiKey"), save = $("#aiSave"), tmo = $("#aiTimeout");
+    if (!prov) return;
+    try {
+      const s = await (await fetch("/api/ai/status")).json();
+      const c = s.config || {};
+      prov.value = c.provider || "off"; base.value = c.base_url || "";
+      model.value = c.model || ""; if (c.api_key === "***set***") key.placeholder = "(saved)";
+      if (tmo) tmo.value = c.timeout || "";
+      setAiStatus(s);
+    } catch (e) { /* AI layer optional */ }
+    if (save) save.onclick = async () => {
+      setAiMsg("Saving…");
+      try {
+        const body = { provider: prov.value, base_url: base.value.trim(),
+          model: model.value.trim() };
+        if (key.value) body.api_key = key.value;
+        if (tmo && tmo.value) body.timeout = parseInt(tmo.value, 10);
+        const r = await (await fetch("/api/ai/config", { method: "POST",
+          headers: { "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+        key.value = "";
+        setAiStatus(r.probe ? Object.assign({ config: r.config }, r.probe) : r);
+        setAiMsg(r.probe && r.probe.ok ? "✓ connected" : ("· " + ((r.probe && r.probe.detail) || r.error || "saved")));
+        if (lastResult) render(lastResult);   // re-render to show AI buttons
+      } catch (e) { setAiMsg("❌ " + e); }
+    };
+  }
+  function setAiStatus(s) {
+    aiEnabled = !!(s && s.enabled && (s.ok || s.reachable));
+    const el = $("#aiStatus"); if (!el) return;
+    if (!s.enabled) { el.textContent = "off"; el.className = "aistatus"; }
+    else if (s.ok) { el.textContent = (s.provider || "on") + " ✓"; el.className = "aistatus on"; }
+    else { el.textContent = (s.provider || "on") + " ?"; el.className = "aistatus warn"; }
+    document.body.classList.toggle("ai-on", aiEnabled);
+  }
+  function setAiMsg(t) { const m = $("#aiMsg"); if (m) m.textContent = t; }
+
+  // minimal, safe markdown -> html (headers, code, bold, lists)
+  function mdToHtml(md) {
+    const lines = String(md).split("\n"); let html = "", inList = false, inCode = false;
+    const inline = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    for (let ln of lines) {
+      if (/^```/.test(ln)) { inCode = !inCode; html += inCode ? "<pre class='aicode'>" : "</pre>"; continue; }
+      if (inCode) { html += esc(ln) + "\n"; continue; }
+      let m;
+      if ((m = ln.match(/^(#{1,4})\s+(.*)/))) { if (inList) { html += "</ul>"; inList = false; }
+        const lvl = Math.min(m[1].length + 2, 5); html += `<h${lvl}>${inline(m[2])}</h${lvl}>`; continue; }
+      if ((m = ln.match(/^\s*[-*]\s+(.*)/)) || (m = ln.match(/^\s*\d+\.\s+(.*)/))) {
+        if (!inList) { html += "<ul>"; inList = true; } html += `<li>${inline(m[1])}</li>`; continue; }
+      if (inList) { html += "</ul>"; inList = false; }
+      if (ln.trim()) html += `<p>${inline(ln)}</p>`;
+    }
+    if (inList) html += "</ul>"; if (inCode) html += "</pre>";
+    return html;
+  }
+
+  function findFinding(d, id) {
+    const pools = [d.extra || [], d.findings || []];
+    for (const p of pools) { const f = p.find(x => x.id === id); if (f) return f; }
+    for (const b of ["root", "ssl"]) for (const m of (d[b] && d[b].mechanisms) || [])
+      if (m.id === id) return m;
+    // API endpoints use value as key
+    for (const e of (d.api && d.api.endpoints) || []) if (e.id === id || e.value === id) return e;
+    return null;
+  }
+
+  function wireAI(d) {
+    // per-finding analyze buttons
+    document.querySelectorAll(".ai-analyze").forEach(btn => btn.onclick = async () => {
+      const out = btn.parentElement.querySelector(".ai-out");
+      const f = findFinding(d, btn.dataset.fid);
+      if (!f) { out.innerHTML = "<em>finding not found</em>"; return; }
+      btn.disabled = true; out.innerHTML = "<span class='spinner'></span> asking your model…";
+      try {
+        const r = await (await fetch("/api/ai/finding", { method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ finding: f, meta: d.meta }) })).json();
+        out.innerHTML = r.ok ? `<div class='aiout'>${mdToHtml(r.markdown)}</div>`
+          : `<div class='aierr'>AI: ${esc(r.error || "unavailable")}${r.enabled === false ? " — configure a model above." : ""}</div>`;
+      } catch (e) { out.innerHTML = `<div class='aierr'>${esc(String(e))}</div>`; }
+      btn.disabled = false;
+    });
+    // pentest plan button
+    const plan = $("#aiPlan");
+    if (plan) plan.onclick = async () => {
+      const host = $("#aiPlanOut");
+      host.innerHTML = "<span class='spinner'></span> building an app-specific plan…";
+      try {
+        const r = await (await fetch("/api/ai/plan", { method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ result: d }) })).json();
+        host.innerHTML = r.ok ? `<div class='aiout'>${mdToHtml(r.markdown)}</div>`
+          : `<div class='aierr'>AI: ${esc(r.error || "unavailable")}${r.enabled === false ? " — configure a model above." : ""}</div>`;
+      } catch (e) { host.innerHTML = `<div class='aierr'>${esc(String(e))}</div>`; }
+    };
+  }
+
+  // ---- AI chatbot ----
+  function initChat() {
+    const fab = $("#chatFab"), panel = $("#chatPanel"), close = $("#chatClose"),
+          body = $("#chatBody"), text = $("#chatText"), send = $("#chatSend");
+    if (!fab) return;
+    const history = [];   // {role, content}
+    fab.onclick = () => { panel.classList.toggle("hidden"); if (!panel.classList.contains("hidden")) text.focus(); };
+    if (close) close.onclick = () => panel.classList.add("hidden");
+    function add(role, html, cls) {
+      const d = document.createElement("div");
+      d.className = "chatmsg " + (cls || role);
+      d.innerHTML = html;
+      body.appendChild(d); body.scrollTop = body.scrollHeight;
+      return d;
+    }
+    async function submit() {
+      const q = text.value.trim();
+      if (!q) return;
+      text.value = "";
+      add("user", esc(q));
+      history.push({ role: "user", content: q });
+      const pending = add("bot", "<span class='spinner'></span> thinking…");
+      try {
+        const r = await (await fetch("/api/ai/chat", {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: history, result: lastResult }) })).json();
+        if (r.ok) {
+          pending.innerHTML = mdToHtml(r.reply);
+          history.push({ role: "assistant", content: r.reply });
+        } else {
+          pending.className = "chatmsg err";
+          pending.innerHTML = "AI: " + esc(r.error || "unavailable") + (r.enabled === false ? " — configure a model in the AI assist panel." : "");
+        }
+      } catch (e) { pending.className = "chatmsg err"; pending.textContent = String(e); }
+    }
+    if (send) send.onclick = submit;
+    if (text) text.addEventListener("keydown", e => {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+    });
+  }
+
   // small public API — render a previously saved result JSON
   window.ShieldScope = { render };
+  initAI();
+  initChat();
 })();

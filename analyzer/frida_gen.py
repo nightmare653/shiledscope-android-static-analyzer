@@ -6,7 +6,7 @@ containing ONLY the hooks relevant to the mechanisms that were actually detected
 with the app's real package / bundle id filled in.
 
 Output:
-  {"script": "<js>", "command": "frida -U -f <id> -l bypass.js --no-pause",
+  {"script": "<js>", "command": "frida -U -f <id> -l bypass.js",
    "filename": "shieldscope_bypass_<id>.js", "hooks": [<mechanism ids covered>]}
 """
 
@@ -250,6 +250,21 @@ def generate(result):
     if plat == "android":
         app_id = (result.get("meta") or {}).get("package") or "<package.name>"
         blocks, covered = _android_blocks(result)
+        # targeted hooks for the ACTUAL (possibly obfuscated) classes we found —
+        # this is what makes the bypass work on renamed apps
+        disc = result.get("discovered") or {}
+        disc_classes = list(disc.get("trust_all", [])) + list(disc.get("custom_tm", []))
+        if disc_classes:
+            lines = ["\n  // --- Targeted hooks for the app's OWN TrustManager classes "
+                     "(discovered by static analysis) ---"]
+            for cls in disc_classes[:8]:
+                lines.append(
+                    "  try { var _C = Java.use('%s');\n"
+                    "    if (_C.checkServerTrusted) _C.checkServerTrusted.overloads.forEach("
+                    "function(o){ o.implementation = function(){ return; }; });\n"
+                    "    console.log('[+] neutralised %s.checkServerTrusted'); } catch (e) {}" % (cls, cls))
+            blocks.append("\n".join(lines))
+            covered.append("app-trustmanagers")
         fw_ids = {f["id"] for f in result.get("frameworks", [])}
         if "flutter" in fw_ids:
             warnings.append("Flutter detected — the Java SSL hooks below will NOT bypass Flutter's "
@@ -258,11 +273,21 @@ def generate(result):
             return {"script": None, "command": None, "hooks": [],
                     "note": "No mechanism with an auto-hook was detected."}
         body = "\n".join(blocks)
+        # spawn-safe wrapper: when spawned, the script runs before ART loads, so
+        # `Java` is not yet defined — wait for the runtime before hooking.
         script = ("/*\n * ShieldScope auto-generated Frida bypass\n * Target: %s\n"
                   " * Covers: %s\n * For authorized testing only.\n */\n"
-                  "Java.perform(function () {\n%s\n  console.log('[ShieldScope] all hooks installed');\n});\n"
+                  "(function () {\n"
+                  "  function _run() { Java.perform(function () {\n%s\n"
+                  "    console.log('[ShieldScope] all hooks installed'); }); }\n"
+                  "  if (typeof Java !== 'undefined' && Java.available) { _run(); return; }\n"
+                  "  var _n = 0, _t = setInterval(function () {\n"
+                  "    if (typeof Java !== 'undefined' && Java.available) { clearInterval(_t); _run(); }\n"
+                  "    else if (++_n > 200) { clearInterval(_t); console.log('[!] Java runtime never came up'); }\n"
+                  "  }, 50);\n"
+                  "})();\n"
                   % (app_id, ", ".join(covered), body))
-        cmd = "frida -U -f %s -l shieldscope_bypass.js --no-pause" % app_id
+        cmd = "frida -U -f %s -l shieldscope_bypass.js" % app_id
 
     elif plat == "ios":
         app_id = (result.get("meta") or {}).get("bundle_id") or "<bundle.id>"
@@ -286,7 +311,7 @@ def generate(result):
                   " * Covers: %s\n * For authorized testing only.\n */\n"
                   "if (ObjC.available) {\n%s\n} else { console.log('ObjC runtime unavailable'); }\n"
                   % (app_id, ", ".join(covered), "\n".join(parts)))
-        cmd = "frida -U -f %s -l shieldscope_bypass.js --no-pause" % app_id
+        cmd = "frida -U -f %s -l shieldscope_bypass.js" % app_id
     else:
         return {"script": None, "command": None, "hooks": [], "note": "Unknown platform."}
 

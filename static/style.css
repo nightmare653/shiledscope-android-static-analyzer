@@ -185,3 +185,72 @@ td.poc code{font-size:11.5px;flex:1;min-width:200px}
 
 .disclaimer{margin-top:26px;font-size:12px;color:#5b6b7d;border-top:1px solid var(--line);padding-top:14px}
 footer{max-width:1040px;margin:0 auto;padding:22px 20px 40px;color:#4a5a6b;font-size:12px;text-align:center}
+
+/* ---- Optional AI assist ---- */
+.aibar{max-width:1040px;margin:0 auto;padding:0 20px}
+.aibar>summary{list-style:none;cursor:pointer;color:#cfe0f0;font-size:13px;padding:8px 0;
+  display:flex;align-items:center;gap:8px;user-select:none}
+.aibar>summary::-webkit-details-marker{display:none}
+.aistatus{font-size:11px;padding:2px 8px;border-radius:10px;background:#16202c;border:1px solid #2a3a4d;color:var(--muted)}
+.aistatus.on{background:#0d2417;border-color:#1f7a4d;color:#69e0a0}
+.aistatus.warn{background:#2a1e06;border-color:#7c5a12;color:#f6cf8a}
+.aibody{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:6px 0 4px}
+.aihint{color:var(--muted);font-size:12.5px;margin:0 0 10px}
+.airow{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+.airow label{display:flex;flex-direction:column;gap:4px;font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.airow input,.airow select{background:#0b0f15;border:1px solid #2a3a4d;color:#dbe7f3;border-radius:8px;
+  padding:7px 10px;font-size:13px;min-width:170px}
+.airow input:focus,.airow select:focus{outline:none;border-color:var(--accent)}
+.aimsg{color:var(--muted);font-size:12.5px;margin-top:8px;min-height:16px}
+
+/* per-finding AI + plan (hidden until a model is configured) */
+.ai-f{display:none;margin-top:10px}
+body.ai-on .ai-f{display:block}
+.aiplan{display:none;margin:12px 0 0}
+body.ai-on .aiplan{display:block}
+.aiplanhint{color:var(--muted);font-size:12px;margin-left:8px}
+.ai-out,#aiPlanOut{margin-top:10px}
+.aiout{background:#0a1a12;border:1px solid #1f5a3c;border-radius:10px;padding:12px 16px;color:#d6efe0;font-size:13.5px;line-height:1.6}
+.aiout h3,.aiout h4,.aiout h5{margin:12px 0 6px;color:#8ff0bd;font-size:14px}
+.aiout h3:first-child,.aiout h4:first-child{margin-top:0}
+.aiout ul{margin:6px 0;padding-left:20px}
+.aiout li{margin:4px 0}
+.aiout code{background:#04140c;border:1px solid #1f5a3c;border-radius:5px;padding:1px 5px;
+  font:12px "SF Mono",ui-monospace,Consolas,monospace;color:#a8f0c8}
+.aiout pre.aicode{background:#04140c;border:1px solid #1f5a3c;border-radius:8px;padding:10px 12px;
+  overflow:auto;font:12px/1.5 "SF Mono",ui-monospace,Consolas,monospace;color:#a8f0c8;white-space:pre}
+.aierr{background:#2a1206;border:1px solid #7c3a12;border-radius:8px;padding:9px 13px;color:#f6b78a;font-size:13px}
+
+.fdyn{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.fdyn h3{margin:0 0 4px;font-size:15px;color:#cfe0f0}
+.fdyn h4{margin:10px 0 4px;font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.fdyn select{background:#0b0f15;border:1px solid #2a3a4d;color:#dbe7f3;border-radius:8px;padding:7px 10px;font-size:13px}
+
+/* ---- AI chatbot ---- */
+.chatfab{position:fixed;bottom:22px;right:22px;width:52px;height:52px;border-radius:50%;
+  border:1px solid #1f5a3c;background:#0d2417;color:#8ff0bd;font-size:24px;cursor:pointer;
+  box-shadow:0 6px 20px rgba(0,0,0,.5);z-index:50;transition:.15s}
+.chatfab:hover{background:#123a24;transform:translateY(-2px)}
+.chatpanel{position:fixed;bottom:84px;right:22px;width:min(420px,92vw);height:min(560px,72vh);
+  background:var(--panel);border:1px solid var(--line);border-radius:14px;display:flex;flex-direction:column;
+  box-shadow:0 12px 40px rgba(0,0,0,.6);z-index:50;overflow:hidden}
+.chathead{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;
+  border-bottom:1px solid var(--line);background:#0e141c;font-size:14px;color:#cfe0f0}
+.chatx{background:none;border:none;color:var(--muted);font-size:22px;cursor:pointer;line-height:1}
+.chatx:hover{color:#fff}
+.chatbody{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
+.chatmsg{max-width:88%;padding:9px 13px;border-radius:12px;font-size:13.5px;line-height:1.55;word-break:break-word}
+.chatmsg.user{align-self:flex-end;background:#12324a;border:1px solid #1e4a6b;color:#dbeafe;border-bottom-right-radius:4px}
+.chatmsg.bot{align-self:flex-start;background:#0a1a12;border:1px solid #1f5a3c;color:#d6efe0;border-bottom-left-radius:4px}
+.chatmsg.err{align-self:flex-start;background:#2a1206;border:1px solid #7c3a12;color:#f6b78a}
+.chatmsg h3,.chatmsg h4,.chatmsg h5{margin:8px 0 4px;font-size:13.5px;color:#8ff0bd}
+.chatmsg ul{margin:5px 0;padding-left:18px}.chatmsg li{margin:3px 0}
+.chatmsg code{background:#04140c;border:1px solid #1f5a3c;border-radius:4px;padding:1px 5px;font:12px ui-monospace,Consolas,monospace;color:#a8f0c8}
+.chatmsg pre.aicode{background:#04140c;border:1px solid #1f5a3c;border-radius:8px;padding:8px 10px;overflow:auto;font:12px ui-monospace,Consolas,monospace;color:#a8f0c8;white-space:pre}
+.chatinput{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line)}
+.chatinput textarea{flex:1;resize:none;background:#0b0f15;border:1px solid #2a3a4d;color:#dbe7f3;
+  border-radius:8px;padding:8px 10px;font:13px inherit}
+.chatinput textarea:focus{outline:none;border-color:var(--accent)}
+
+/* ensure the hidden class beats the panel's display:flex (specificity fix) */
+.chatpanel.hidden{display:none}

@@ -12,24 +12,103 @@ All analysis is **static** and local — no device needed, nothing leaves your m
 
 ## Run
 
+**GUI (web):**
 ```bash
 pip install -r requirements.txt
 python app.py
 # open http://127.0.0.1:5000
 ```
-
 Drop an `.apk` or `.ipa` onto the page → **Analyze**.
 
-## How it works
+**CLI (headless / CI):**
+```bash
+python cli.py app.apk                    # readable summary in the terminal
+python cli.py app.apk --json out.json    # full result as JSON
+python cli.py app.apk --keep-decompiled  # keep + print the decompiled tree (smali/java/res)
+python cli.py app.apk --fail-on high     # non-zero exit if any high finding (CI gate)
+```
+Same engine as the GUI; no server needed.
 
-| | Android | iOS |
+### Requirements (Android deep engine)
+
+The Android analyzer decompiles the app, so it needs three external tools on the
+machine (auto-detected on startup; override with the env vars if they live
+elsewhere):
+
+| Tool | Purpose | Env override |
 |---|---|---|
-| Metadata | androguard (package, SDKs, NSC flag, debuggable) | Info.plist (bundle id, min OS), LIEF (arch, FairPlay `cryptid`) |
-| Scan target | all `classes*.dex` + native `.so` bytes | main Mach-O + framework binaries + LIEF symbols |
-| Special decode | `network_security_config.xml` AXML → `<pin-set>` | embedded `.cer/.der`, bundled `*.framework` |
-| Framework aware | Flutter / React Native / Xamarin / Unity / Cordova | bundled frameworks list |
+| **Java 17+** (JRE) | runs jadx & apktool | `SHIELDSCOPE_JAVA` |
+| **jadx** | Java decompilation (reconstructs constant strings) | `SHIELDSCOPE_JADX_JAR` → `jadx-*-all.jar` |
+| **apktool** | smali + decoded resources/manifest | `SHIELDSCOPE_APKTOOL_JAR` → `apktool.jar` |
 
-Detection is a byte-signature engine (`analyzer/signatures.py`). Each finding links to bypass guides (`analyzer/guides.py`). The report shows a per-mechanism breakdown, a layer count, a heuristic protection score, and only the guides the app actually triggers.
+Install: `winget install Skylot.jadx` (then grab the CLI zip) / `apt install jadx apktool` /
+`brew install jadx apktool`. Other tuning: `SHIELDSCOPE_HEAP` (default `4g`),
+`SHIELDSCOPE_JADX_TIMEOUT` (default `900`s), `SHIELDSCOPE_APKTOOL_TIMEOUT` (default `300`s).
+Every external tool runs under a hard timeout — a hostile app **cannot** hang the run.
+If jadx/apktool are missing the engine degrades gracefully (smali-only, then raw bytes).
+
+## How it works (Android deep engine)
+
+The Android path (`analyzer/apk_deep.py`) is a staged pipeline, not a byte scan:
+
+1. **Unpack** (`analyzer/unpack.py`) — apktool (smali + decoded resources/manifest)
+   and jadx (Java with reconstructed constant strings) run under hard timeouts,
+   plus **recursive extraction of nested archives** (jar/zip/apk/aar inside
+   `assets/`, `lib/`, …). A secret hidden in a bundled jar ends up on disk as a
+   real file.
+2. **Behavioral detection** (`analyzer/detect.py`) — root/jailbreak & SSL pinning
+   are matched over **smali** (string constants + `.implements` interface
+   contracts) and native `.so` symbols, so detection **survives R8/DexGuard
+   renaming** (a class renamed to `Lp3/a;` is still found). It reads
+   `checkServerTrusted` bodies to tell real pinning from a **trust-all
+   TrustManager** (a MITM *vulnerability*, reported as such — never counted as
+   protection). It also scores obfuscation and records the app's actual (renamed)
+   TrustManager class names.
+3. **Exhaustive secret hunt** (`analyzer/deepscan.py` + `analyzer/secret_rules.py`)
+   — walks the **entire** tree (no extension allowlist): decompiled Java, decoded
+   resources, `resources.arsc`, nested-archive contents, and `strings` of every
+   binary. ~48 vendor detectors + entropy, run via a fast **anchor-dispatch**
+   engine (a 160 MB decompiled tree scans in well under a minute, parallelised).
+4. **Signing / manifest / IPC / attack surface** — signer cert (Janus, debug
+   cert, weak key/hash), exported components with adb PoCs, URLs/buckets/IPs,
+   weak crypto — over the raw dex/so bytes and the parsed manifest.
+
+Each finding links to bypass guides (`analyzer/guides.py`); the auto-generated
+Frida script (`analyzer/frida_gen.py`) hooks the **discovered** class names, so
+it works on obfuscated apps.
+
+### Auth-surface & API attack surface
+
+- **Auth surface** (`analyzer/detect.py`) — flags **guest / anonymous / skip-login
+  access paths** (a common broken-access-control entry that lets an unauthenticated
+  user reach authenticated data / IDOR) and **client-side authorization flags**
+  (`isPremium`/`isAdmin`/… decided on-device → bypassable), each with a test playbook.
+- **API endpoints + pentest playbooks** (`analyzer/apiscan.py`) — harvests every
+  endpoint (absolute URLs **and** relative `/api/...` paths, including ones built
+  from a base URL), separates third-party/SDK hosts, and **classifies each by
+  sensitivity** (auth, IDOR-prone user data, financial, admin, file, GraphQL, OTP…)
+  with a concrete **how-to-test** playbook: the likely weakness, the request/payload
+  to try, and the tool. Static leads to verify with an intercepting proxy.
+
+### jadx is adaptive
+
+jadx is the slow stage. On a large multidex app it can run 15+ min and still only
+produce *partial* Java — which is slower **and** less complete than the smali apktool
+already gave us. So the engine runs jadx only when the dex is small enough to finish
+quickly (`SHIELDSCOPE_JADX_MAXDEX_MB`, default 45); larger apps use complete smali
+instead. Force either way with `SHIELDSCOPE_FORCE_JADX=1`/`=0`.
+
+### Tests
+
+```bash
+pytest -m "not integration"   # fast unit tests (no APK/tools needed)
+pytest -m integration         # full engine on sample APKs (slow; needs jadx/apktool + APKs)
+```
+Point the integration tests at your APKs with `SHIELDSCOPE_TEST_APKS=/path/to/dir`.
+
+> The legacy byte-signature engine (`analyzer/apk.py`, `analyzer/signatures.py`)
+> remains for reference and supplies the fast metadata read; iOS still uses
+> `analyzer/ipa.py`.
 
 ### Beyond detection
 
@@ -55,7 +134,8 @@ Validated against real ~120 MB apps (Wolt / Wolt Partner): correctly separates F
 
 ### Detected mechanisms (summary)
 
-- **Android root:** RootBeer, su-path checks, root-package enumeration, `test-keys`, Magisk artifacts, BusyBox/`which su`, SafetyNet, Play Integrity, freeRASP/DexGuard RASP, emulator checks.
+- **Android root / integrity / anti-tamper:** RootBeer, su-path checks, root-package enumeration, `test-keys`, Magisk artifacts, BusyBox/`which su`, SafetyNet, Play Integrity, freeRASP/DexGuard RASP, emulator checks, and **PairIP** — Google Play's VM-based integrity protection (`libpairipcore.so` / `com.pairip.VMRunner` / `licensecheck`), detected via smali class refs *and* the native lib, with a dedicated bypass playbook.
+- **Hygiene checks (parity with common APK scanners):** missing `FLAG_SECURE` (screens capturable/overlayable), tapjacking (no obscured-touch filtering), debug logging in release, unprotected broadcasts, and keyboard-cache on password fields.
 - **Android SSL:** OkHttp CertificatePinner, Network Security Config `<pin-set>`, TrustKit, custom TrustManager/HostnameVerifier, WebView SSL errors, native/BoringSSL pinning.
 - **iOS jailbreak:** Cydia/Sileo paths, JB file checks, `fork()`/sandbox, `canOpenURL(cydia://)`, IOSSecuritySuite, ptrace/sysctl anti-debug.
 - **iOS SSL:** TrustKit, AFNetworking, Alamofire ServerTrustManager, URLSession challenge pinning, low-level SecTrust/BoringSSL, embedded certs.

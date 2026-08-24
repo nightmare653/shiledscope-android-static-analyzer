@@ -6,11 +6,13 @@ short summary + protection score.
 
 import hashlib
 import os
+import shutil
+import tempfile
 import zipfile
 
 import tarfile
 
-from . import apk as apk_mod
+from . import apk_deep
 from . import ipa as ipa_mod
 from . import guides as guides_mod
 from . import frida_gen
@@ -161,6 +163,11 @@ def _score(result):
     """
     Rough 0-100 'protection strength' heuristic + rating label.
     Weights reward multiple independent layers and hard-to-bypass layers.
+
+    A trust-all TrustManager (disabled TLS validation) is a MITM hole that
+    undermines whatever pinning is present, so it CAPS the rating regardless of
+    how many controls exist — otherwise the headline reads "Very strong" over a
+    live vulnerability.
     """
     weight = {"high": 20, "medium": 12, "low": 6}
     layer_bonus = {"native": 10, "framework": 8, "config": 4, "java": 0, "objc": 0}
@@ -170,6 +177,15 @@ def _score(result):
             score += weight.get(m.get("confidence"), 8)
             score += layer_bonus.get(m.get("layer"), 0)
     score = min(score, 100)
+
+    # does any finding disable TLS validation?
+    trustall = [f for f in (result.get("extra") or [])
+                if str(f.get("id", "")).startswith("trustall-")]
+    capped = False
+    if trustall and score > 40:
+        score = 40
+        capped = True
+
     if score == 0:
         rating = "None detected"
     elif score < 25:
@@ -180,6 +196,9 @@ def _score(result):
         rating = "Strong"
     else:
         rating = "Very strong"
+    if capped:
+        rating += " (capped: TLS validation disabled in %d class%s)" % (
+            len(trustall), "es" if len(trustall) != 1 else "")
     return score, rating
 
 
@@ -193,7 +212,7 @@ def _summary(result):
     return parts
 
 
-def analyze_file(path, original_name=None):
+def analyze_file(path, original_name=None, keep_workdir=False):
     ftype = _detect_type(path)
     if ftype is None:
         return {"ok": False, "error": "Unrecognised file — expected an APK, IPA, or an extracted "
@@ -208,13 +227,32 @@ def analyze_file(path, original_name=None):
             _map_masvs(result)
         return result
 
+    workdir = None
     if ftype == "apk":
-        result = apk_mod.analyze(path)
+        workdir = tempfile.mkdtemp(prefix="ss_work_")
+        try:
+            result = apk_deep.analyze(path, workdir)
+        except Exception as e:
+            shutil.rmtree(workdir, ignore_errors=True)
+            import traceback
+            traceback.print_exc()
+            return {"ok": False, "error": "Deep analysis failed: %s" % e, "platform": "android"}
     else:
         result = ipa_mod.analyze(path)
 
     if result.get("error"):
+        if workdir:
+            shutil.rmtree(workdir, ignore_errors=True)
         return {"ok": False, "error": result["error"], "platform": result.get("platform")}
+
+    # deep engine keeps a scratch workdir; drop it once results are extracted,
+    # unless the caller asked to keep the decompiled tree (CLI --keep-decompiled)
+    if workdir:
+        if keep_workdir:
+            result["decompiled_dir"] = workdir
+        else:
+            result.pop("_workdir", None)
+            shutil.rmtree(workdir, ignore_errors=True)
 
     result["file"] = {
         "name": original_name or os.path.basename(path),

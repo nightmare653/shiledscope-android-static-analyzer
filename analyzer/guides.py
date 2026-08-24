@@ -301,6 +301,33 @@ GUIDES = {
             {"label": "Play Integrity API docs", "url": "https://developer.android.com/google/play/integrity"},
         ],
     },
+    "pairip-bypass": {
+        "title": "PairIP (Google Play integrity protection) — bypass approaches",
+        "difficulty": "hard",
+        "needs": ["Rooted device / emulator", "Frida", "apktool/jadx (for repack routes)"],
+        "steps": [
+            "Identify the scope: PairIP moves the app's real bytecode into an encrypted VM run by "
+            "`com.pairip.VMRunner.executeVM` (native `libpairipcore.so`). It checks Play install "
+            "source, app signature, debuggers and Frida — mostly in native code.",
+            "License/'Get this app from Play' gate: hook the license flow — force "
+            "`com.pairip.licensecheck.LicenseClient` / `LicenseClientV3` verify callbacks to report "
+            "success, or stub `com.pairip.licensecheck.LicenseActivity` so it doesn't finish the app.",
+            "Signature check: hook `PackageManager.getPackageInfo`/`GET_SIGNATURES` (and "
+            "`com.pairip.SignatureCheck`) to return the original signature; or patch the check.",
+            "Anti-Frida/anti-debug: run frida-server renamed/on a non-default port, use gadget or "
+            "`frida --runtime=v8`, and hook the native detection (ptrace/`/proc` scans in libpairipcore.so).",
+            "For static/repack routes, dump the decrypted DEX from memory at runtime (the VM "
+            "materialises classes) with a Frida DEX dumper, then rebuild.",
+            "Use the community PairIP bypass scripts/research below as a starting point — offsets "
+            "and patterns change every build, so expect to adapt.",
+        ],
+        "resources": [
+            {"label": "Bypassing PairIP Integrity Checks (Medium)", "url": "https://petruknisme.medium.com/bypassing-pairip-integrity-checks-21d7bdd4a052"},
+            {"label": "Reversing PairIP VM (Byteria Lab)", "url": "https://blog.byterialab.com/reversing-googles-new-vm-based-integrity-protection-pairip/"},
+            {"label": "pairipcore research (Solaree)", "url": "https://github.com/Solaree/pairipcore"},
+            {"label": "pairipcore-vm (MatrixEditor)", "url": "https://github.com/MatrixEditor/pairipcore-vm"},
+        ],
+    },
 
     # ===================================================================
     #  iOS -- SSL PINNING BYPASS
