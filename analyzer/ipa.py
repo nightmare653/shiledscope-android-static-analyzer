@@ -252,6 +252,7 @@ def analyze(ipa_path):
              + masvs.build_crypto_findings(crypto_raw)
              + masvs.ios_config(info)
              + storage.build_ios_code_findings(storage_presence)
+             + _entitlements_findings(z, app_root, names)
              + db_findings)
     z.close()
 
@@ -273,3 +274,56 @@ def analyze(ipa_path):
 
 def _empty():
     return {"implemented": False, "layers": 0, "mechanisms": []}
+
+
+def _entitlements_findings(z, app_root, names):
+    """Parse embedded.mobileprovision for insecure entitlements: get-task-allow
+    (the app is debuggable in production) and wildcard app-ids."""
+    F = []
+    mp = app_root + "/embedded.mobileprovision"
+    if mp not in names:
+        return F
+    try:
+        raw = z.read(mp)
+    except Exception:
+        return F
+    i, j = raw.find(b"<plist"), raw.find(b"</plist>")
+    if i == -1 or j == -1:
+        return F
+    try:
+        pl = plistlib.loads(raw[i:j + 8])
+    except Exception:
+        return F
+    ent = pl.get("Entitlements", {}) if isinstance(pl, dict) else {}
+    if ent.get("get-task-allow") is True:
+        F.append({
+            "id": "ios-get-task-allow",
+            "title": "App is debuggable in production (get-task-allow=true)",
+            "severity": "high", "category": "config",
+            "location": "embedded.mobileprovision -> Entitlements.get-task-allow",
+            "evidence": "get-task-allow = true",
+            "description": "The provisioning profile grants get-task-allow, so the shipped app can be "
+                           "attached to by a debugger and have its memory read on a normal device.",
+            "risk": "Anyone can attach lldb/Frida to the process, dump memory and runtime secrets, and "
+                    "trace execution — this is a development/ad-hoc entitlement that must not ship.",
+            "reproduce": ["`security cms -D -i embedded.mobileprovision | plutil -p -` and check "
+                          "Entitlements.get-task-allow.",
+                          "On a device, attach: `lldb -n <App>` or `frida -U -n <App>`."],
+            "mitigation": "Ship App Store / distribution builds (get-task-allow=false). Never release an "
+                          "ad-hoc/development-signed build.",
+            "masvs": "MASVS-RESILIENCE-2"})
+    appid = ent.get("application-identifier", "") or ent.get("com.apple.application-identifier", "")
+    if isinstance(appid, str) and appid.endswith("*"):
+        F.append({
+            "id": "ios-wildcard-appid",
+            "title": "Wildcard application-identifier in provisioning profile",
+            "severity": "low", "category": "config",
+            "location": "embedded.mobileprovision -> Entitlements.application-identifier",
+            "evidence": appid,
+            "description": "The app is signed with a wildcard App ID (%s)." % appid,
+            "risk": "Wildcard App IDs cannot use App ID-scoped services (keychain sharing, app groups, "
+                    "push) securely and often indicate a loosely-managed signing setup.",
+            "reproduce": ["Inspect Entitlements.application-identifier in the provisioning profile."],
+            "mitigation": "Use an explicit App ID per app and scope entitlements tightly.",
+            "masvs": "MASVS-CODE-1"})
+    return F

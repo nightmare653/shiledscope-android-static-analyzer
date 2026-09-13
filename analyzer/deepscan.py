@@ -45,7 +45,7 @@ _TEXT_EXT = {
     ".conf", ".ini", ".env", ".gradle", ".pro", ".sql", ".graphql", ".proto",
     ".plist", ".strings", ".csv", ".sh", ".bat", ".ps1", ".py", ".rb", ".php",
     ".c", ".cc", ".cpp", ".h", ".m", ".mm", ".swift", ".go", ".pem", ".key",
-    ".crt", ".cer", ".pub", ".jwt", ".toml", ".tsv", ".map",
+    ".crt", ".cer", ".pub", ".jwt", ".toml", ".tsv", ".map", ".dart", ".hasm",
 }
 # never worth scanning (pure media / fonts) — saves time, no secrets live here
 _SKIP_EXT = {
@@ -59,6 +59,18 @@ _SKIP_EXT = {
 _ENTROPY_EXT = {
     ".json", ".xml", ".properties", ".env", ".yml", ".yaml", ".plist", ".toml",
 }
+# code where a keyword-adjacent high-entropy token can still be a real secret,
+# but which is noisier than config — scanned with the STRICT entropy bars. Raw
+# .dex is deliberately EXCLUDED: smali is its disassembly and carries the same
+# const-string literals, so scanning both would double the (costly) entropy pass
+# on the largest input for no extra coverage. When smali is present it wins; if
+# apktool failed, dex still gets vendor-rule + generic-secret coverage.
+_CODE_ENTROPY_EXT = {
+    ".java", ".kt", ".smali", ".js", ".jsx", ".ts",
+}
+# strict code-entropy is the most expensive pass on big smali trees; allow opting
+# out (config-file entropy is unaffected).
+_CODE_ENTROPY_ON = os.environ.get("SHIELDSCOPE_CODE_ENTROPY", "1") != "0"
 _TEXT_READ_CAP = 24 * 1024 * 1024
 _BIN_READ_CAP = 64 * 1024 * 1024
 _STRINGS_MIN = 5
@@ -117,7 +129,7 @@ def _line_at(nl, pos):
     return bisect.bisect_right(nl, pos) + 1
 
 
-def _scan_text(text, rel, add, entropy_ok=False):
+def _scan_text(text, rel, add, entropy_ok=False, entropy_strict=False):
     """
     Anchor-dispatch scan: one cheap prefilter pass; each anchor hit runs only the
     specific rule(s) it implies, in a small window. Guarantees no missed match
@@ -169,7 +181,7 @@ def _scan_text(text, rel, add, entropy_ok=False):
         # entropy in the same window (only for generic keyword anchors, and only
         # in config/resource files — code is too noisy)
         if entropy_ok and anchor in R.ENTROPY_ANCHORS and per_rule.get("high-entropy", 0) < 20:
-            er = R.entropy_in_window(window)
+            er = R.entropy_in_window(window, strict=entropy_strict)
             if er:
                 v, off, kind = er
                 if not R.looks_placeholder(v):
@@ -179,17 +191,17 @@ def _scan_text(text, rel, add, entropy_ok=False):
                     per_rule["high-entropy"] = per_rule.get("high-entropy", 0) + 1
 
 
-def _should_scan_source(source, java_available):
-    if source in ("java", "resource"):
-        return True
-    if source == "package":
-        return True
+def _should_scan_source(source, java_available, java_fallback=False):
+    # smali is normally redundant once jadx Java exists, so it's skipped — BUT
+    # when the Java came from the dex2jar+CFR fallback (java_fallback) it may be
+    # incomplete, so smali is kept as well.
     if source == "smali":
-        return not java_available   # only as fallback
+        return (not java_available) or java_fallback
     return True
 
 
-_SRC_TAG = {"java": "", "smali": " [smali]", "resource": " [res]", "package": ""}
+_SRC_TAG = {"java": "", "smali": " [smali]", "resource": " [res]", "package": "",
+            "native": " [native]", "fwsrc": " [fw]"}
 
 
 def _read_text(ap, kind):
@@ -235,22 +247,51 @@ def _scan_one(job):
         text = _read_text(ap, kind)
         if text:
             ext = os.path.splitext(rel)[1].lower()
-            _scan_text(text, rel + tag, add, entropy_ok=(ext in _ENTROPY_EXT))
+            if ext in _ENTROPY_EXT:
+                _scan_text(text, rel + tag, add, entropy_ok=True, entropy_strict=False)
+            elif ext in _CODE_ENTROPY_EXT and _CODE_ENTROPY_ON:
+                _scan_text(text, rel + tag, add, entropy_ok=True, entropy_strict=True)
+            else:
+                _scan_text(text, rel + tag, add, entropy_ok=False)
             scanned += 1
     return list(local.values()), scanned
+
+
+def _class_stem(rel):
+    """`com/foo/Bar$Inner.smali` -> `com/foo/bar` (top-level class, lowercased)."""
+    r = rel.replace("\\", "/").lower()
+    r = r.rsplit(".", 1)[0]              # drop extension
+    return r.split("$", 1)[0]           # collapse nested/anon classes
 
 
 def _plan(unpacked):
     """Build the list of (abs_path, rel, kind, tag) files to scan."""
     java_available = bool(unpacked.java_dir)
+    java_fallback = getattr(unpacked, "java_is_fallback", False)
+    entries = list(unpacked.iter_files())
+
+    # In fallback mode we scan smali AND CFR-Java. Avoid scanning both copies of
+    # the same class: build the set of classes CFR actually recovered, and scan
+    # smali ONLY for classes CFR missed. This is the perf fix for the doubled
+    # corpus (smali + Java) without losing coverage on CFR's failures.
+    cfr_classes = set()
+    if java_fallback:
+        for _ap, rel, source in entries:
+            if source == "java" and rel.lower().endswith(".java"):
+                cfr_classes.add(_class_stem(rel))
+
     jobs = []
-    for ap, rel, source in unpacked.iter_files():
-        if not _should_scan_source(source, java_available):
+    for ap, rel, source in entries:
+        if not _should_scan_source(source, java_available, java_fallback):
             continue
+        if source == "smali" and java_fallback and rel.lower().endswith(".smali")                 and _class_stem(rel) in cfr_classes:
+            continue                    # CFR already decompiled this class to Java
         kind = _is_text_name(rel)
         if kind is None:
             continue
-        if source == "package" and java_available and rel.lower().endswith(".dex"):
+        # dex strings are redundant with authoritative jadx Java, but NOT with
+        # the CFR fallback (which can miss classes) — keep dex then.
+        if source == "package" and java_available and not java_fallback                 and rel.lower().endswith(".dex"):
             continue
         jobs.append((ap, rel, kind, _SRC_TAG.get(source, "")))
     return jobs
@@ -361,6 +402,7 @@ def build_findings(raw_hits):
         desc, risk = _prose(rule, name)
         finding = {
             "id": "secret-" + re.sub(r"\W+", "-", (rule + "-" + h["value"][:8]).lower()),
+            "rule": rule,
             "title": ("Likely secret: " if rule == "high-entropy" else "Hardcoded secret: ") + name,
             "severity": sev, "category": "secret",
             "location": loc, "evidence": h["value"],

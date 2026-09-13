@@ -46,7 +46,10 @@ class Unpacked:
         self.manifest_path = None       # decoded AndroidManifest.xml (apktool)
         self.res_dir = None             # apktool res/
         self.smali_dirs = []            # apktool smali*/ dirs
-        self.java_dir = None            # jadx sources root
+        self.java_dir = None            # jadx (or CFR fallback) sources root
+        self.java_is_fallback = False   # java came from dex2jar+CFR, not jadx
+        self.native_src_dir = None      # Ghidra-decompiled native .so -> C
+        self.extra_src_dirs = []        # framework decompile output (Flutter/Hermes)
         self.nested = []                # relpaths of nested archives expanded
         self.stages = []                # human-readable stage log
         self.tool_log = []              # structured tool invocations
@@ -83,10 +86,21 @@ class Unpacked:
         if self.java_dir:
             for x in walk(self.java_dir, "java"):
                 yield x
+        # Ghidra-decompiled native code (C)
+        if self.native_src_dir:
+            for x in walk(self.native_src_dir, "native"):
+                yield x
+        # framework-specific decompiled sources (Flutter/Dart, Hermes RN)
+        for esd in self.extra_src_dirs:
+            for x in walk(esd, "fwsrc"):
+                yield x
 
     def summary(self):
         return {
             "have_java": bool(self.java_dir),
+            "java_is_fallback": self.java_is_fallback,
+            "have_native_src": bool(self.native_src_dir),
+            "have_fw_src": bool(self.extra_src_dirs),
             "have_smali": bool(self.smali_dirs),
             "have_res": bool(self.res_dir),
             "nested_archives": len(self.nested),
@@ -283,7 +297,159 @@ def unpack(apk_path, workdir, jadx_timeout=600, apktool_timeout=300):
             up.stages.append("jadx: %s - using smali"
                              % ("timed out" if r.timed_out else "failed"))
 
+    # 3b) DEX -> Java fallback: dex2jar (DEX->JAR) + CFR (JAR->Java). Runs when
+    #     jadx produced no Java (absent, skipped, or timed out). It's ADDITIVE —
+    #     smali + dex strings are still scanned (java_is_fallback), because a
+    #     different decompiler recovers different classes. Disable: FALLBACK=0.
+    if up.java_dir is None and tools.have_decompiler_fallback             and os.environ.get("SHIELDSCOPE_DECOMPILE_FALLBACK") != "0":
+        d2j_jar = os.path.join(workdir, "d2j.jar")
+        r1 = T.dex2jar(apk_path, d2j_jar, timeout=jadx_timeout, log=up.tool_log)
+        if r1.ok and os.path.isfile(d2j_jar):
+            cfr_out = os.path.join(workdir, "cfr")
+            os.makedirs(cfr_out, exist_ok=True)
+            r2 = T.cfr(d2j_jar, cfr_out, timeout=jadx_timeout, log=up.tool_log)
+            if _has_java(cfr_out):
+                up.java_dir = cfr_out
+                up.java_is_fallback = True
+                up.stages.append("dex2jar+CFR: recovered Java in %ss (jadx fallback; "
+                                 "smali kept)" % round(r1.seconds + r2.seconds, 1))
+            else:
+                up.stages.append("dex2jar+CFR: no Java recovered (%s)"
+                                 % ("CFR timed out" if r2.timed_out else "CFR failed"))
+        else:
+            up.stages.append("dex2jar: %s - skipping CFR"
+                             % ("timed out" if r1.timed_out else "failed"))
+    elif up.java_dir is None and not tools.have_decompiler_fallback             and not tools.have_jadx:
+        up.stages.append("dex2jar+CFR fallback: not available "
+                         "(set SHIELDSCOPE_DEX2JAR + SHIELDSCOPE_CFR_JAR) - smali only")
+
+    # 3c) Native .so decompilation via Ghidra (opt-in; heavy/slow). Writes each
+    #     lib's decompiled C into the tree so native pinning/root logic and
+    #     secrets in .so become scannable. Enable: SHIELDSCOPE_ENABLE_GHIDRA=1.
+    if tools.have_ghidra and os.environ.get("SHIELDSCOPE_ENABLE_GHIDRA") == "1":
+        try:
+            _run_ghidra(up, workdir,
+                        timeout=int(os.environ.get("SHIELDSCOPE_GHIDRA_TIMEOUT", "600")),
+                        max_libs=int(os.environ.get("SHIELDSCOPE_GHIDRA_MAXLIBS", "8")))
+        except Exception as e:
+            up.stages.append("Ghidra: native decompilation failed (%s)" % e)
+
+    # 3d) Framework deep-decompile: Flutter (libapp.so -> Dart) and React Native
+    #     Hermes (bytecode bundle -> disasm). The real logic/secrets/pinning live
+    #     here, invisible to smali/CFR. Tools are optional; strings are scanned
+    #     regardless, so this only ADDS structure when the tool is present.
+    try:
+        _framework_decompile(up, tools,
+                             timeout=int(os.environ.get("SHIELDSCOPE_FW_TIMEOUT", "300")))
+    except Exception as e:
+        up.stages.append("framework decompile: failed (%s)" % e)
+
     return up
+
+
+_HERMES_MAGIC = bytes.fromhex("c61fbc03c103191f")  # Hermes bytecode file magic
+
+
+def _has_lib(raw_dir, names):
+    for _dp, _dn, fs in os.walk(raw_dir):
+        if any(n in fs for n in names):
+            return True
+    return False
+
+
+def _find_hermes_bundles(raw_dir):
+    """RN Hermes bundles: files starting with the Hermes magic (also catches
+    them under any name — index.android.bundle, *.hbc, *.bundle)."""
+    out = []
+    for dp, _dn, fs in os.walk(raw_dir):
+        for fn in fs:
+            low = fn.lower()
+            if not (low.endswith((".bundle", ".hbc", ".jsbundle")) or "bundle" in low):
+                continue
+            fp = os.path.join(dp, fn)
+            try:
+                with open(fp, "rb") as f:
+                    if f.read(8) == _HERMES_MAGIC:
+                        out.append(fp)
+            except OSError:
+                continue
+    return out
+
+
+def _framework_decompile(up, tools, timeout=300):
+    fw_dir = os.path.join(up.workdir, "fw_src")
+    # Flutter -> Dart via blutter
+    flutter_present = _has_lib(up.raw_dir, ("libapp.so", "libflutter.so"))
+    if flutter_present and tools.have_blutter:
+        libdir = None
+        for dp, _dn, fs in os.walk(up.raw_dir):
+            if "libapp.so" in fs:
+                libdir = dp
+                break
+        if libdir:
+            out = os.path.join(fw_dir, "flutter")
+            os.makedirs(out, exist_ok=True)
+            T.blutter(libdir, out, timeout=timeout, log=up.tool_log)
+            if os.path.isdir(out) and os.listdir(out):
+                up.extra_src_dirs.append(out)
+                up.stages.append("blutter: dumped Flutter/Dart classes to text")
+    elif flutter_present:
+        up.stages.append("Flutter detected — install blutter (SHIELDSCOPE_BLUTTER) to "
+                         "dump Dart; libapp.so strings are scanned regardless")
+
+    # React Native Hermes -> disasm via hbctool
+    bundles = _find_hermes_bundles(up.raw_dir)
+    if bundles and tools.have_hbctool:
+        for i, bp in enumerate(bundles[:2]):
+            out = os.path.join(fw_dir, "hermes_%d" % i)
+            os.makedirs(out, exist_ok=True)
+            T.hbctool_disasm(bp, out, timeout=timeout, log=up.tool_log)
+            if os.path.isdir(out) and os.listdir(out):
+                up.extra_src_dirs.append(out)
+                up.stages.append("hbctool: disassembled Hermes bundle %s" % os.path.basename(bp))
+    elif bundles:
+        up.stages.append("React Native Hermes bundle(s) detected (%d) — install hbctool for "
+                         "bytecode disasm; string literals are scanned regardless" % len(bundles))
+
+
+# common runtime/framework .so that carry no app logic worth Ghidra time
+_SKIP_SO = {
+    "libc++_shared.so", "libc++.so", "libc.so", "libm.so", "libz.so",
+    "libjsc.so", "libhermes.so", "libfbjni.so", "libimagepipeline.so",
+    "libflipper.so", "libglog.so", "libfolly_runtime.so", "libreactnativejni.so",
+}
+
+
+def _run_ghidra(up, workdir, timeout=600, max_libs=8):
+    """Decompile the app's largest native libs to C via Ghidra headless."""
+    so_files = []
+    for dp, _dn, fs in os.walk(up.raw_dir):
+        for fn in fs:
+            if fn.endswith(".so") and fn not in _SKIP_SO:
+                so_files.append(os.path.join(dp, fn))
+    if not so_files:
+        return
+    # de-dupe by basename (same lib across ABIs), largest first, cap count
+    by_name = {}
+    for pth in so_files:
+        b = os.path.basename(pth)
+        if b not in by_name or os.path.getsize(pth) > os.path.getsize(by_name[b]):
+            by_name[b] = pth
+    picked = sorted(by_name.values(), key=lambda p: os.path.getsize(p), reverse=True)[:max_libs]
+    out_dir = os.path.join(workdir, "native_src")
+    os.makedirs(out_dir, exist_ok=True)
+    proj = os.path.join(workdir, "ghidra_proj")
+    os.makedirs(proj, exist_ok=True)
+    script_path = os.path.dirname(os.path.abspath(__file__))
+    done = 0
+    for so in picked:
+        out_c = os.path.join(out_dir, os.path.basename(so) + ".c")
+        T.ghidra_headless(so, out_c, proj, script_path, timeout=timeout, log=up.tool_log)
+        if os.path.isfile(out_c) and os.path.getsize(out_c) > 0:
+            done += 1
+    if done:
+        up.native_src_dir = out_dir
+        up.stages.append("Ghidra: decompiled %d native lib(s) to C" % done)
 
 
 def _dex_megabytes(raw_dir):

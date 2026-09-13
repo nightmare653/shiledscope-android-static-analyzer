@@ -81,3 +81,49 @@ def test_looks_placeholder():
     assert R.looks_placeholder("changeme")
     assert R.looks_placeholder("xxxxxxxx")
     assert not R.looks_placeholder("aB3xY9kLm2Qr7")
+
+
+def _scan_code(text):
+    """Run the scan with STRICT code-entropy enabled (as _scan_one does for code)."""
+    hits = {}
+
+    def add(rid, name, sev, value, rel, line):
+        hits.setdefault(rid, []).append(value)
+
+    deepscan._scan_text(text, "x.java", add, entropy_ok=True, entropy_strict=True)
+    return hits
+
+
+# ---- false-negative filter fixes ----
+def test_telegram_with_sequential_id_not_placeholder():
+    # a real bot id containing "123456" must no longer be dropped as a placeholder
+    assert not R.looks_placeholder("8091234567:AAF9zQ2wxE7rT1yU4iO6pS8dF0gH5jK3lM9n")
+
+
+def test_whole_value_fillers_still_rejected():
+    for v in ("123456", "12345678", "abcdefabcdef", "deadbeef", "00000000", "ffffffff"):
+        assert R.looks_placeholder(v), v
+
+
+def test_real_key_containing_filler_run_kept():
+    # contains "123456" and "abcdef" as substrings but is a real-looking key
+    assert not R.looks_placeholder("Kp9x123456AbCdQmZ7wT")
+
+
+# ---- previously-dead rules now reachable ----
+def test_basic_auth_url_detected():
+    hits = _scan('String u = "https://admin:S3cretPass@internal.corp.acme-corp.io/db";')
+    assert "basic-auth-url" in hits
+
+
+def test_every_rule_reachable_by_anchor():
+    routed = set()
+    for rids in R.ANCHOR_TO_RULES.values():
+        routed.update(rids)
+    assert set(R.RULE_IDS) <= routed, "unroutable rules: %s" % (set(R.RULE_IDS) - routed)
+
+
+# ---- keyword-gated entropy now runs on code (strict) ----
+def test_code_entropy_strict_fires_near_keyword():
+    hits = _scan_code('String secret = "aZ3xK9mQ2wE7rT1yU4iO6pS8dF0gH5jB2nC4v";')
+    assert "high-entropy" in hits

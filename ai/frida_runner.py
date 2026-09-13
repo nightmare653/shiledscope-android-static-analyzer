@@ -191,3 +191,46 @@ def _run_via_api(package, script_js, device_id, spawn, collect_seconds):
     markers = [c for c in console if isinstance(c, str) and c.strip().startswith("[+]")]
     return {"ok": len(errors) == 0, "loaded": True, "console": console,
             "sends": sends, "errors": errors, "markers": markers}
+
+
+def dump_dex(package, device_id=None, timeout=180):
+    """Runtime-unpack a packed app: run frida-dexdump to recover the decrypted
+    DEX from the live process's memory. Returns paths to the dumped .dex files
+    so the static engine can re-scan the real (unpacked) code.
+
+    Needs: frida-dexdump on PATH (`pip install frida-dexdump`), a device running
+    frida-server, and the app installed. Degrades gracefully otherwise.
+    """
+    if not package:
+        return {"ok": False, "error": "no target package specified"}
+    cli = shutil.which("frida-dexdump")
+    if not cli:
+        return {"ok": False, "error": "frida-dexdump not installed "
+                                      "(`pip install frida-dexdump`)"}
+    out_dir = tempfile.mkdtemp(prefix="ss_dexdump_")
+    args = [cli] + (["-D", device_id] if device_id else ["-U"]) + \
+        ["-f", package, "-o", out_dir]
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                universal_newlines=True, errors="replace")
+    except Exception as e:
+        return {"ok": False, "error": "failed to launch frida-dexdump: %s" % e,
+                "dex_dir": out_dir}
+    out = ""
+    try:
+        out, _ = proc.communicate(timeout=max(30, timeout))
+    except subprocess.TimeoutExpired:
+        _kill(proc)
+        try:
+            out, _ = proc.communicate(timeout=8)
+        except Exception:
+            out = out or ""
+    dex_files = []
+    for dp, _dn, fs in os.walk(out_dir):
+        for fn in fs:
+            if fn.lower().endswith(".dex"):
+                dex_files.append(os.path.join(dp, fn))
+    tail = [l.rstrip() for l in (out or "").splitlines() if l.strip()][-25:]
+    return {"ok": bool(dex_files), "dex_dir": out_dir, "dex_files": dex_files,
+            "count": len(dex_files), "output": tail,
+            "error": None if dex_files else "no .dex dumped (device/app/frida-server?)"}

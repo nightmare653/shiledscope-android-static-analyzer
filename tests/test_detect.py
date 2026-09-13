@@ -133,3 +133,27 @@ def test_pendingintent_severity_handles_string_target_sdk():
     # None / garbage must not crash
     detect._build_code_findings(None, "com.app.Notif", None)
     detect._build_code_findings(None, "com.app.Notif", "unknown")
+
+
+# ---- widened SSL / anti-tamper signatures ----
+def test_new_ssl_signals_detected(tmp_path):
+    smali = ('.class Lcom/app/Net;\n'
+             '    Landroid/net/http/X509TrustManagerExtensions;->checkServerTrusted\n'
+             '    invoke-virtual {}, Lorg/chromium/net/CronetEngine;->addPublicKeyPins()\n'
+             '    Lcom/toyberman/RNSslPinning;->getCookie\n')
+    found, _t, _a = _worker(smali, tmp_path=tmp_path)
+    assert {"x509-tm-extensions", "cronet-pinning", "rn-ssl-pinning"} <= set(found)
+
+
+def test_anti_instrumentation_signals_detected(tmp_path):
+    smali = ('.class Lcom/app/Sec;\n'
+             '    const-string v0, "re.frida.server"\n'
+             '    const-string v1, "de.robv.android.xposed"\n'
+             '    const-string v2, "TracerPid"\n')
+    found, _t, _a = _worker(smali, tmp_path=tmp_path)
+    assert {"anti-frida", "anti-xposed", "anti-debug"} <= set(found)
+
+
+def test_packer_smali_signal_detected(tmp_path):
+    found, _t, _a = _worker('.class Lcom/licel/dexprotector/DexGuard;\n', tmp_path=tmp_path)
+    assert "app-shielding" in found

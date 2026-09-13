@@ -275,6 +275,24 @@ IOS_JAILBREAK = [
         "desc": "Anti-debugging (ptrace PT_DENY_ATTACH / sysctl P_TRACED) that resists Frida attach.",
         "guides": ["frida-ios-antidebug"],
     },
+    {
+        "id": "ios-anti-frida",
+        "name": "Anti-Frida / instrumentation detection (iOS)",
+        "category": "root", "layer": "objc", "confidence": "medium", "platform": "ios",
+        "patterns": [b"FridaGadget", b"cynject", b"libcycript", b"/usr/lib/frida",
+                     b"re.frida.server", b"gum-js-loop"],
+        "desc": "Scans for Frida/Cycript instrumentation (injected dylibs, ports, files).",
+        "guides": ["frida-ios-antidebug", "frida-ios-jb"],
+    },
+    {
+        "id": "ios-dylib-integrity",
+        "name": "Injected-dylib / integrity check",
+        "category": "root", "layer": "objc", "confidence": "medium", "platform": "ios",
+        "patterns": [b"_dyld_get_image_name", b"MobileSubstrate.dylib",
+                     b"SubstrateLoader.dylib", b"TweakInject", b"/Library/MobileSubstrate"],
+        "desc": "Enumerates loaded dylibs to detect injected tweaks / hooking libraries.",
+        "guides": ["frida-ios-jb", "objection-jb"],
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -323,6 +341,15 @@ IOS_SSL = [
         "patterns": [b"SSLSetSessionOption", b"tls_helper", b"boringssl", b"SecTrustSetAnchorCertificates"],
         "desc": "Pinning at the Security.framework / BoringSSL layer — needs a native hook.",
         "guides": ["frida-ssl-universal-ios", "frida-native-ssl"],
+    },
+    {
+        "id": "ios-flutter-pinning",
+        "name": "Flutter TLS (iOS)",
+        "category": "ssl", "layer": "native", "confidence": "medium", "platform": "ios",
+        "patterns": [b"badCertificateCallback", b"setTrustedCertificatesBytes"],
+        "desc": "Flutter app: TLS runs through Flutter's own BoringSSL — bypass needs reFlutter "
+                "or a Flutter engine hook, not SecTrust/objection hooks.",
+        "guides": ["frida-native-ssl", "frida-ssl-universal-ios"],
     },
     {
         "id": "embedded-cert",

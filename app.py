@@ -26,7 +26,16 @@ MAX_MB = 600  # apk/ipa can be large
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = MAX_MB * 1024 * 1024
-CORS(app)
+
+# CORS is restricted to the local UI origin, NOT wildcarded. With `CORS(app)`
+# (allow-all) any website you visited while the server ran could POST an APK to
+# 127.0.0.1:5000 and read the JSON back (a drive-by). Same-origin requests from
+# our own UI need no CORS headers at all; only explicitly-listed extra origins
+# (override with SHIELDSCOPE_CORS_ORIGINS, comma-separated) are allowed.
+_default_origins = ["http://127.0.0.1:5000", "http://localhost:5000"]
+_cors_origins = [o.strip() for o in
+                 os.environ.get("SHIELDSCOPE_CORS_ORIGINS", "").split(",") if o.strip()]     or _default_origins
+CORS(app, resources={r"/api/*": {"origins": _cors_origins}})
 
 
 @app.route("/")
@@ -140,6 +149,32 @@ def ai_frida_run():
         return jsonify(frida_runner.run_script(
             b.get("package"), b.get("script") or "", device_id=b.get("device_id"),
             collect_seconds=int(b.get("seconds", 6))))
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/ai/frida/dexdump", methods=["POST"])
+def ai_frida_dexdump():
+    """Runtime-unpack a packed app (frida-dexdump) and re-scan the recovered DEX
+    with the static engine, returning findings the packed APK hid. Needs a device."""
+    import shutil, tempfile
+    try:
+        from ai import frida_runner
+        from analyzer import apk_deep
+        b = request.get_json(force=True) or {}
+        pkg = b.get("package")
+        dump = frida_runner.dump_dex(pkg, device_id=b.get("device_id"),
+                                     timeout=int(b.get("seconds", 180)))
+        if not dump.get("ok"):
+            return jsonify({"ok": False, "stage": "dump", **dump}), 200
+        workdir = tempfile.mkdtemp(prefix="ss_rescan_")
+        try:
+            rescan = apk_deep.rescan_dex_dir(dump["dex_dir"], workdir)
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+            shutil.rmtree(dump.get("dex_dir", ""), ignore_errors=True)
+        return jsonify({"ok": rescan.get("ok", False), "dump": {
+            "count": dump.get("count"), "output": dump.get("output")}, "rescan": rescan})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

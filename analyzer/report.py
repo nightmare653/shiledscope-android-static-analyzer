@@ -27,6 +27,61 @@ def _sha256(path):
     return h.hexdigest()
 
 
+# Bump when detection/scanning logic changes so the on-disk cache self-invalidates.
+_ENGINE_VERSION = "2026.09-1"
+
+
+def _cache_dir():
+    d = os.environ.get("SHIELDSCOPE_CACHE_DIR") or         os.path.join(os.path.expanduser("~"), ".shieldscope", "cache")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except OSError:
+        return None
+    return d
+
+
+def _cache_load(sha):
+    """Return a cached static result for this APK hash, or None. Keyed by hash +
+    engine version, so a code change invalidates every entry automatically."""
+    import json
+    d = _cache_dir()
+    if not d:
+        return None
+    fp = os.path.join(d, sha + ".json")
+    try:
+        with open(fp, "r", encoding="utf-8") as f:
+            blob = json.load(f)
+        if blob.get("engine") == _ENGINE_VERSION and isinstance(blob.get("result"), dict):
+            return blob["result"]
+    except Exception:
+        return None
+    return None
+
+
+def _cache_store(sha, result):
+    import json
+    d = _cache_dir()
+    if not d:
+        return
+    try:
+        with open(os.path.join(d, sha + ".json"), "w", encoding="utf-8") as f:
+            json.dump({"engine": _ENGINE_VERSION, "result": result}, f)
+    except Exception:
+        pass
+
+
+def _post_validate(result, flag):
+    """Optionally confirm which hardcoded secrets are actually live (network,
+    opt-in). Runs on fresh AND cached results so verdicts stay fresh."""
+    if not (flag or os.environ.get("SHIELDSCOPE_VALIDATE_SECRETS") == "1"):
+        return
+    try:
+        from . import validate as _val
+        _val.validate_result(result)
+    except Exception:
+        pass
+
+
 def _detect_type(path):
     """Return 'apk' | 'ipa' | 'datadir' | None using content, not just extension."""
     ext = os.path.splitext(path)[1].lower()
@@ -212,7 +267,7 @@ def _summary(result):
     return parts
 
 
-def analyze_file(path, original_name=None, keep_workdir=False):
+def analyze_file(path, original_name=None, keep_workdir=False, validate_secrets=False):
     ftype = _detect_type(path)
     if ftype is None:
         return {"ok": False, "error": "Unrecognised file — expected an APK, IPA, or an extracted "
@@ -226,6 +281,15 @@ def analyze_file(path, original_name=None, keep_workdir=False):
                               "type": "datadir"}
             _map_masvs(result)
         return result
+
+    sha = _sha256(path)
+    cache_on = (os.environ.get("SHIELDSCOPE_CACHE") == "1") and not keep_workdir
+    if cache_on:
+        cached = _cache_load(sha)
+        if cached is not None:
+            cached.setdefault("file", {})["name"] = original_name or os.path.basename(path)
+            _post_validate(cached, validate_secrets)
+            return cached
 
     workdir = None
     if ftype == "apk":
@@ -257,7 +321,7 @@ def analyze_file(path, original_name=None, keep_workdir=False):
     result["file"] = {
         "name": original_name or os.path.basename(path),
         "size": os.path.getsize(path),
-        "sha256": _sha256(path),
+        "sha256": sha,
         "type": ftype,
     }
     result = _refine_confidence(result)
@@ -270,4 +334,7 @@ def analyze_file(path, original_name=None, keep_workdir=False):
     result["rating"] = rating
     result["summary"] = _summary(result)
     result["ok"] = True
+    if cache_on:
+        _cache_store(sha, result)
+    _post_validate(result, validate_secrets)
     return result

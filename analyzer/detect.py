@@ -75,6 +75,32 @@ _SMALI_SIGNALS = [
      ["Lcom/pairip/", "com/pairip/VMRunner", "com/pairip/licensecheck",
       "com/pairip/StartupLauncher", "com/pairip/SignatureCheck"]),
 
+    ("anti-frida", "root", "java", "medium", "Anti-Frida / instrumentation check",
+     "Looks for Frida / dynamic-instrumentation artefacts (frida-server, gum, an "
+     "injected agent, or /data/local/tmp paths).",
+     ["frida-antihook", "magisk-denylist"],
+     ["re.frida.server", "frida-server", "gum-js-loop", "/data/local/tmp/frida",
+      "frida_agent", "frida-gadget", "LIBFRIDA"]),
+    ("anti-xposed", "root", "java", "medium", "Anti-Xposed / hook-framework check",
+     "Detects the Xposed / EdXposed / LSPosed hooking frameworks.",
+     ["frida-antihook", "magisk-denylist"],
+     ["de.robv.android.xposed", "XposedBridge", "XposedHelpers", "edxposed",
+      "io.github.lsposed", "lsposed"]),
+    ("anti-debug", "root", "java", "medium", "Anti-debug check (TracerPid / ptrace)",
+     "Checks for an attached debugger via TracerPid in /proc/self/status (or a "
+     "ptrace self-attach).",
+     ["frida-antidebug"],
+     ["TracerPid", "/proc/self/status"]),
+    ("app-shielding", "root", "framework", "high", "Commercial app-shielding / packer / RASP",
+     "Commercial app-hardening / packer / RASP SDK (DexProtector, Appdome, Promon "
+     "SHIELD, Guardsquare DexGuard RASP, Bangcle/SecNeo, Qihoo 360, Tencent Legu). "
+     "Often encrypts the real DEX and runs native integrity/anti-hook checks.",
+     ["app-shielding-bypass", "magisk-denylist"],
+     ["Lcom/licel/dexprotector", "com/licel/dexprotector", "Lcom/appdome",
+      "no/promon", "com/promon", "Lcom/secneo", "com/secneo/apkwrapper",
+      "com/qihoo/util/StubApp", "com/tencent/StubShell", "com/stub/StubApp",
+      "com/guardsquare"]),
+
     ("okhttp-pinner", "ssl", "java", "high", "OkHttp CertificatePinner",
      "OkHttp CertificatePinner with sha256/ public-key pins.",
      ["objection-ssl-android", "frida-ssl-universal", "frida-okhttp"],
@@ -88,6 +114,28 @@ _SMALI_SIGNALS = [
      "WebView SSL error callback — may enforce or dangerously ignore cert errors.",
      ["frida-webview-ssl"],
      ["onReceivedSslError"]),
+    ("x509-tm-extensions", "ssl", "java", "high", "X509TrustManagerExtensions pinning",
+     "Uses android.net.http.X509TrustManagerExtensions to manually verify / pin the "
+     "server certificate chain.",
+     ["frida-ssl-universal", "objection-ssl-android"],
+     ["Landroid/net/http/X509TrustManagerExtensions", "X509TrustManagerExtensions"]),
+    ("httpsconn-factory", "ssl", "java", "medium", "Custom SSLSocketFactory on HttpsURLConnection",
+     "Installs an app-defined SSLSocketFactory / TrustManager on HttpsURLConnection "
+     "(hand-rolled pinning — or a bypass if it trusts everything).",
+     ["frida-ssl-universal", "objection-ssl-android"],
+     ["setDefaultSSLSocketFactory", "HttpsURLConnection;->setSSLSocketFactory"]),
+    ("volley-tls", "ssl", "java", "low", "Volley HurlStack custom TLS",
+     "Volley networking via HurlStack with a custom SSLSocketFactory — possible pinning.",
+     ["frida-ssl-universal", "objection-ssl-android"],
+     ["Lcom/android/volley/toolbox/HurlStack", "com/android/volley/toolbox/HurlStack"]),
+    ("cronet-pinning", "ssl", "framework", "high", "Cronet public-key pinning",
+     "Chromium Cronet with addPublicKeyPins() certificate pinning.",
+     ["frida-native-ssl", "frida-ssl-universal"],
+     ["addPublicKeyPins", "Lorg/chromium/net/CronetEngine;->addPublicKeyPins"]),
+    ("rn-ssl-pinning", "ssl", "framework", "high", "React Native SSL pinning bridge",
+     "A React Native pinning module (react-native-ssl-pinning / react-native-pinch).",
+     ["frida-ssl-universal", "objection-ssl-android"],
+     ["Lcom/toyberman", "RNSslPinning", "Lcom/localz/PinchModule"]),
 ]
 
 # native .so string signals
@@ -100,6 +148,17 @@ _NATIVE_SIGNALS = [
      "RASP SDK (Talsec freeRASP or similar) doing native root/hook/tamper checks.",
      ["frida-native-rasp", "magisk-denylist"],
      [b"talsec", b"freerasp", b"AppSecureRoom"]),
+    ("flutter-pinning", "ssl", "native", "medium", "Flutter TLS customisation / pinning",
+     "Dart TLS customisation (badCertificateCallback / setTrustedCertificatesBytes) "
+     "in Flutter native code. Flutter ships its own BoringSSL trust store, so bypass "
+     "needs reFlutter or a libflutter.so hook — Java/objection hooks will NOT work.",
+     ["flutter-ssl"],
+     [b"badCertificateCallback", b"setTrustedCertificatesBytes"]),
+    ("anti-frida-native", "root", "native", "medium", "Native anti-Frida / anti-debug",
+     "Native code probes for Frida or a debugger (frida strings, gum, TracerPid) — "
+     "needs a native hook / patch to defeat.",
+     ["frida-antihook", "frida-antidebug"],
+     [b"gum-js-loop", b"re.frida.server", b"frida-agent", b"LIBFRIDA", b"TracerPid"]),
 ]
 
 _LIB_PREFIXES = (
@@ -136,6 +195,24 @@ _FRAMEWORK_LIBS = [
 # ---------------------------------------------------------------------------
 #  smali scan (parallel)
 # ---------------------------------------------------------------------------
+# commercial packers/RASP detected by their native lib filename (strong signal,
+# survives all Java/smali obfuscation). substring match against each .so name.
+_PACKER_SO = [
+    ("libdexprotector", "DexProtector"),
+    ("libjiagu", "Qihoo 360 Jiagu packer"),
+    ("libsecexe", "Bangcle / SecNeo packer"),
+    ("libsecmain", "Bangcle / SecNeo packer"),
+    ("libDexHelper", "SecShell / DexHelper packer"),
+    ("libmobisec", "Alibaba Mobisec packer"),
+    ("libtup", "Tencent Legu packer"),
+    ("libshella", "Tencent Legu packer"),
+    ("libpromon", "Promon SHIELD"),
+    ("libappdome", "Appdome"),
+    ("libddog", "Nagain packer"),
+    ("libnesec", "NetEase packer"),
+]
+
+
 _TM_IFACE = "Ljavax/net/ssl/X509TrustManager;"
 _HV_IFACE = "Ljavax/net/ssl/HostnameVerifier;"
 _CLASS_RE = re.compile(r"^\.class[^\n]*\s(L[^\s;]+;)", re.M)
@@ -220,8 +297,10 @@ def _smali_worker(files):
         # hygiene presence flags (aggregated app-wide -> absence is the finding)
         if "_hyg_flagsecure" not in found and "FLAG_SECURE" in text:
             found["_hyg_flagsecure"] = "1"
-        if "_hyg_filtertouches" not in found and "filterTouchesWhenObscured" in text.lower() \
-                or "setFilterTouchesWhenObscured" in text:
+        # match case-insensitively over `low`, whole test under the not-in-found
+        # guard: the old `A and B or C` parsed as `(A and B) or C`, and B tested a
+        # mixed-case literal against lowercased text so it could never match.
+        if "_hyg_filtertouches" not in found and "filtertoucheswhenobscured" in low:
             found["_hyg_filtertouches"] = "1"
         if "_hyg_debuglog" not in found and ("Landroid/util/Log;->d(" in text
                                              or "Landroid/util/Log;->v(" in text):
@@ -404,6 +483,28 @@ def _scan_native(unpacked):
                     if s in b:
                         hits[sid] = s.decode("ascii", "replace")
                         break
+
+    # also match native signals over Ghidra-decompiled C (when present): the
+    # function/symbol names survive as text, sharpening native SSL/root detection.
+    nsrc = getattr(unpacked, "native_src_dir", None)
+    if nsrc and os.path.isdir(deepscan._op(nsrc)):
+        for dp, _dn, fs in os.walk(deepscan._op(nsrc)):
+            for fn in fs:
+                if not fn.endswith((".c", ".txt")):
+                    continue
+                try:
+                    with open(os.path.join(dp, fn), "rb") as f:
+                        b = f.read(48 * 1024 * 1024)
+                except OSError:
+                    continue
+                for sig in _NATIVE_SIGNALS:
+                    sid, subs = sig[0], sig[7]
+                    if sid in hits:
+                        continue
+                    for s in subs:
+                        if s in b:
+                            hits[sid] = s.decode("ascii", "replace")
+                            break
     return hits, so_names
 
 
@@ -735,6 +836,20 @@ def analyze(unpacked, workers=4, target_sdk=None):
         else:
             root.append(_mk(psig, "libpairipcore.so"))
         discovered["pairip"] = True
+
+    # commercial packer / RASP by native lib name (independent, strong signal).
+    # Collapse into the single app-shielding mechanism to avoid inflating layers.
+    packer = next(((lib, label) for n in so_names for lib, label in _PACKER_SO
+                   if lib.lower() in n.lower()), None)
+    if packer:
+        lib_so = packer[0] + ".so"
+        existing = next((m for m in root if m["id"] == "app-shielding"), None)
+        if existing:
+            existing["evidence"] = (existing.get("evidence", "") + ", " + lib_so).strip(", ")
+        else:
+            asig = by_id.get("app-shielding")
+            root.append(_mk(asig, "%s (%s)" % (lib_so, packer[1])))
+        discovered["packer"] = packer[1]
 
     # custom TrustManagers discovered behaviourally — COLLAPSE into one mechanism
     # (each library ships its own; listing them all would inflate "layers"), and

@@ -57,6 +57,14 @@ def _print_summary(r):
     if fw:
         print("Frameworks: " + ", ".join(fw))
 
+    # which decompile/scan engines actually ran (coverage transparency)
+    up = r.get("unpack", {})
+    if up.get("stages"):
+        print()
+        print(bold("Engines / coverage:"))
+        for stage in up["stages"]:
+            print(dim("  - " + stage))
+
     for bucket, label in (("root", "Root / integrity / anti-tamper"), ("ssl", "SSL / pinning")):
         b = r.get(bucket, {})
         mechs = b.get("mechanisms", [])
@@ -82,6 +90,14 @@ def _print_summary(r):
                   + dim("  (%s)" % x.get("location", ""))[:120])
         if len(extra) > 25:
             print(dim("  … %d more (use --json for the full list)" % (len(extra) - 25)))
+
+    sv = r.get("secret_validation")
+    if sv and sv.get("ran"):
+        print()
+        print(bold("Secret validation: ")
+              + green("%d live" % sv.get("live", 0)) + "  "
+              + "%d invalid  %d unknown  (%d probed)"
+              % (sv.get("invalid", 0), sv.get("unknown", 0), sv.get("probes", 0)))
 
     api = r.get("api", {})
     if api.get("counts", {}).get("total"):
@@ -115,6 +131,9 @@ def main(argv=None):
     ap.add_argument("-q", "--quiet", action="store_true", help="suppress the readable summary")
     ap.add_argument("--fail-on", choices=["high", "medium", "low"],
                     help="exit non-zero if any finding at/above this severity exists (CI gate)")
+    ap.add_argument("--validate-secrets", action="store_true",
+                    help="OPT-IN: probe discovered vendor keys with a read-only API call to "
+                         "confirm which are LIVE (network; authorized testing only)")
     args = ap.parse_args(argv)
 
     if not os.path.isfile(args.target):
@@ -125,7 +144,8 @@ def main(argv=None):
         print(dim("Analyzing %s … (large apps take several minutes)" % os.path.basename(args.target)),
               file=sys.stderr, flush=True)
     r = analyze_file(args.target, original_name=os.path.basename(args.target),
-                     keep_workdir=args.keep_decompiled)
+                     keep_workdir=args.keep_decompiled,
+                     validate_secrets=args.validate_secrets)
 
     if not r.get("ok"):
         print(red("Analysis failed: " + str(r.get("error"))), file=sys.stderr)

@@ -26,6 +26,7 @@ from . import surface as surface_mod
 from . import storage as storage_mod
 from . import signing as signing_mod
 from . import manifest_checks
+from . import manifest_fallback
 
 
 def _raw_code_scan(up):
@@ -104,6 +105,20 @@ def analyze(apk_path, workdir):
     at = int(os.environ.get("SHIELDSCOPE_APKTOOL_TIMEOUT", "300"))
     up = unpack_mod.unpack(apk_path, workdir, jadx_timeout=jt, apktool_timeout=at)
 
+    # If androguard couldn't parse the APK, `a` is None and every manifest-derived
+    # check (metadata, permissions, config, IPC) would silently return nothing.
+    # apktool has usually decoded a good manifest by now — parse that so the app
+    # identity and those findings survive an androguard failure. (Signing still
+    # uses the real `a`: the cert can't be read from apktool output.)
+    manifest_fallback_used = False
+    a_manifest = a
+    if a is None:
+        shim = manifest_fallback.build(up)
+        if shim is not None:
+            a_manifest = shim
+            meta = manifest_fallback.backfill_meta(meta, shim)
+            manifest_fallback_used = True
+
     workers = max(2, min(8, (os.cpu_count() or 4)))
 
     # detection (smali/native/manifest)
@@ -119,6 +134,12 @@ def analyze(apk_path, workdir):
     pkg = (meta or {}).get("package")
     sign_meta, sign_findings = signing_mod.analyze(a, (meta or {}).get("min_sdk"))
 
+    if manifest_fallback_used:
+        det.setdefault("notes", []).append(
+            "androguard could not parse this APK; package/version/permissions and the "
+            "manifest/config/IPC findings were recovered from apktool's decoded manifest. "
+            "Signing-certificate checks are unavailable for this run.")
+
     api = apiscan.harvest(up)
     extra = (det.get("vulns", [])
              + det.get("auth", [])
@@ -127,8 +148,8 @@ def analyze(apk_path, workdir):
              + sign_findings
              + secret_findings
              + masvs.build_crypto_findings(crypto_raw)
-             + masvs.android_config(a, pkg)
-             + manifest_checks.analyze(a, pkg)
+             + masvs.android_config(a_manifest, pkg)
+             + manifest_checks.analyze(a_manifest, pkg)
              + storage_mod.build_code_findings(storage_presence)
              + dbs)
 
@@ -138,7 +159,7 @@ def analyze(apk_path, workdir):
         "signing": sign_meta,
         "api": api,
         "surface": surface_mod.finalize(surface_acc),
-        "ipc": surface_mod.ipc(a, pkg),
+        "ipc": surface_mod.ipc(a_manifest, pkg),
         "frameworks": det["frameworks"],
         "extra": extra,
         "root": det["root"],
@@ -151,4 +172,63 @@ def analyze(apk_path, workdir):
                   "smali_trees": len(up.smali_dirs),
                   "nested_archives": len(up.nested)},
         "_workdir": workdir,
+    }
+
+
+def rescan_dex_dir(dex_dir, workdir):
+    """Re-run detection + the secret hunt over runtime-dumped DEX (e.g. from
+    frida-dexdump on a packed app). Disassembles each .dex to smali (for the
+    obfuscation-resilient detectors) and decompiles to Java (for secrets), then
+    runs the SAME engine. Returns the finding subset that static analysis of the
+    packed APK could not see. Best-effort: needs dex2jar (+ CFR for Java)."""
+    import glob
+    import shutil
+    from . import tools as T
+
+    up = unpack_mod.Unpacked(workdir)
+    os.makedirs(up.raw_dir, exist_ok=True)
+    dexes = sorted(glob.glob(os.path.join(dex_dir, "**", "*.dex"), recursive=True))
+    if not dexes:
+        return {"ok": False, "error": "no .dex files in %s" % dex_dir}
+
+    tools = T.get_tools()
+    smali_root = os.path.join(workdir, "smali")
+    java_root = os.path.join(workdir, "java")
+    os.makedirs(smali_root, exist_ok=True)
+    jt = int(os.environ.get("SHIELDSCOPE_JADX_TIMEOUT", "600"))
+    for i, dx in enumerate(dexes):
+        # keep the raw dex in the tree so the strings/secret pass sees it too
+        try:
+            shutil.copy2(dx, os.path.join(up.raw_dir, "dumped_%d.dex" % i))
+        except OSError:
+            pass
+        if tools.have_dex2jar:
+            sm = os.path.join(smali_root, "smali_%d" % i)
+            T.baksmali(dx, sm, timeout=jt, log=up.tool_log)
+            if os.path.isdir(sm):
+                up.smali_dirs.append(sm)
+            if tools.have_cfr:
+                jar = os.path.join(workdir, "dumped_%d.jar" % i)
+                r = T.dex2jar(dx, jar, timeout=jt, log=up.tool_log)
+                if r.ok and os.path.isfile(jar):
+                    T.cfr(jar, java_root, timeout=jt, log=up.tool_log)
+    if os.path.isdir(java_root) and any(f.endswith(".java")
+                                        for _dp, _dn, fs in os.walk(java_root) for f in fs):
+        up.java_dir = java_root
+        up.java_is_fallback = True
+
+    workers = max(2, min(8, (os.cpu_count() or 4)))
+    det = detect_mod.analyze(up, workers=workers)
+    raw_hits, scanned = deepscan.scan(up, workers=workers)
+    secret_findings = deepscan.build_findings(raw_hits)
+    extra = (det.get("vulns", []) + det.get("auth", []) + det.get("misc", [])
+             + secret_findings)
+    return {
+        "ok": True,
+        "source": "runtime-dumped-dex",
+        "root": det["root"], "ssl": det["ssl"],
+        "extra": extra,
+        "discovered": det["discovered"],
+        "stats": {"dex_dumped": len(dexes), "files_scanned": scanned,
+                  "smali_trees": len(up.smali_dirs), "have_java": bool(up.java_dir)},
     }

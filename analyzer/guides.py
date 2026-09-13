@@ -443,6 +443,53 @@ GUIDES = {
             {"label": "OWASP MASTG", "url": "https://mas.owasp.org/MASTG/"},
         ],
     },
+    "frida-antihook": {
+        "title": "Defeat anti-Frida / anti-Xposed self-detection",
+        "difficulty": "hard",
+        "needs": ["Frida", "frida-server (renamed)", "Ghidra/IDA for native checks"],
+        "steps": [
+            "The app scans for instrumentation: frida-server ports/strings, /data/local/tmp agents, /proc/<pid>/maps entries (frida-agent, gum-js-loop), and Xposed classes (de.robv.android.xposed, LSPosed).",
+            "Rename frida-server and load the gadget via repackaging instead of a well-known server, or use `strongR-frida` to dodge string/port detection.",
+            "Hook the Java detector to return clean: `Java.use('<class>').<method>.implementation = function(){ return false; };`.",
+            "For native checks, find the string compare / file-open in Ghidra and patch or hook it (Interceptor.attach on the check).",
+            "Hide Xposed with a hider module (e.g. LSPosed itself supports hiding) so class-lookup checks pass.",
+        ],
+        "resources": [
+            {"label": "strongR-frida-android", "url": "https://github.com/hzzhezhe/strongR-frida-android"},
+            {"label": "objection (patch/repackage)", "url": "https://github.com/sensepost/objection"},
+        ],
+    },
+    "frida-antidebug": {
+        "title": "Bypass anti-debug (TracerPid / ptrace / isDebuggerConnected)",
+        "difficulty": "medium",
+        "needs": ["Frida", "frida-server"],
+        "steps": [
+            "The app reads TracerPid from /proc/self/status (or calls ptrace(PTRACE_TRACEME)) and refuses to run if traced.",
+            "Java path: hook `android.os.Debug.isDebuggerConnected` and any custom checker to return false.",
+            "Native TracerPid path: hook `fopen`/`read` and rewrite the TracerPid line to 0, or hook the parser function directly.",
+            "ptrace self-attach path: `Interceptor.replace(Module.getExportByName(null,'ptrace'), new NativeCallback(function(){return 0;}, 'long', ['int','int','pointer','pointer']));`.",
+            "Re-run and confirm the app proceeds while your debugger/Frida stays attached.",
+        ],
+        "resources": [
+            {"label": "Frida Interceptor", "url": "https://frida.re/docs/javascript-api/#interceptor"},
+        ],
+    },
+    "app-shielding-bypass": {
+        "title": "Commercial app-shielding / packer / RASP (DexProtector, Appdome, Promon, Bangcle, Qihoo, Legu)",
+        "difficulty": "hard",
+        "needs": ["Rooted device", "Frida (stealth)", "Ghidra/IDA", "frida-dexdump", "patience"],
+        "steps": [
+            "These products encrypt/pack the real DEX and unpack it in native code at runtime, plus run RASP (root/Frida/debugger/repackage checks) — static analysis alone will not see the real code.",
+            "Dump the decrypted DEX from memory once it is loaded: `frida-dexdump -U -f <package>` (or objection memory dump), then decompile the recovered classes.",
+            "Reduce RASP friction first: Magisk DenyList + Shamiko for root hiding, and a renamed/stealth Frida for instrumentation checks.",
+            "Locate the integrity/verdict routine in the packer's native lib (Ghidra) and hook/patch it to report 'clean'.",
+            "Expect version-specific behaviour; validate each control (root, debugger, Frida, repackage, signature) separately.",
+        ],
+        "resources": [
+            {"label": "frida-dexdump", "url": "https://github.com/hluwa/frida-dexdump"},
+            {"label": "strongR-frida-android", "url": "https://github.com/hzzhezhe/strongR-frida-android"},
+        ],
+    },
 }
 
 

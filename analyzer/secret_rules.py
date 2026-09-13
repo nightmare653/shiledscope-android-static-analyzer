@@ -199,7 +199,7 @@ _anch("hooks.slack.com", "slack-webhook")
 _anch("SG.", "sendgrid-key")
 _anch("key-", "mailgun-key")
 _anch("EAA", "facebook-token")
-_anch("discord", "discord-webhook")
+_anch("discord", "discord-webhook", "discord-bot")
 _anch("T3BlbkFJ", "openai-key")
 _anch("sk-ant-", "anthropic-key")
 _anch("hf_", "huggingface-token")
@@ -214,6 +214,11 @@ _anch("amqp", "amqp-uri")
 _anch("eyJ", "jwt", "mapbox-token")
 _anch("-----begin", "private-key-block", "gcp-sa-private-key")
 _anch("AAAA", "firebase-fcm-key")
+# rules that previously had NO anchor and so never fired — route them here
+_anch("SK", "twilio-key")               # Twilio key SID: SK + 32 hex
+_anch("-us", "mailchimp-key")           # Mailchimp: 32-hex-<dc>, e.g. ...-us21
+_anch(":AA", "telegram-bot")            # Telegram bot token: <id>:AA...
+_anch("://", "basic-auth-url")          # user:pass@host in an http(s) URL
 # contextual anchors
 _anch("aws", "aws-secret-key")
 _anch("algolia", "algolia-admin")
@@ -235,11 +240,30 @@ PREFILTER = re.compile("|".join(re.escape(a) for a in _ANCHOR_LIST), re.IGNORECA
 # ---------------------------------------------------------------------------
 #  false-positive filter
 # ---------------------------------------------------------------------------
+# word / marker placeholders — matched as substrings (an "example_key" IS junk)
 _PLACEHOLDER = re.compile(
     r"(?i)(example|placeholder|your[_-]?|change[_-]?me|dummy|sample|redacted|"
     r"xxxx+|\.\.\.|<[a-z_]+>|\{\{|\$\{|test[_-]?(key|token|secret|password)|"
-    r"insert[_-]?|todo|fixme|lorem|foobar|000000|123456|abcdef|deadbeef|"
-    r"aaaaaa|password123|s3cr3t|notreal|fake)")
+    r"insert[_-]?|todo|fixme|lorem|foobar|password123|s3cr3t|notreal|fake)")
+
+# whole-value trivial fillers: the ENTIRE value is a sequential / hex / repeated
+# dummy (anchored with fullmatch), so we drop "123456" / "abcdefabcdef" /
+# "deadbeef" but keep a real secret that merely CONTAINS such a run
+# (e.g. "S3cr3t123456Ab" or a Telegram id like "8093407781:AA…"). Previously
+# these were substring-matched, silently discarding real keys/tokens.
+_FILLER = re.compile(
+    r"(?i)^(?:0x)?(?:1234567890|123456789|1234567|123456|abcdef|deadbeef|"
+    r"cafebabe|0+|1+|f+)+$")
+
+# monotonic keyboard/hex sequences ("12345678", "0123456789", "abcdefgh", and
+# their reverses) — junk, but not a clean repeat unit, so caught separately.
+_SEQ_FWD = "0123456789" * 2 + "abcdefghijklmnopqrstuvwxyz"
+_SEQ_REV = _SEQ_FWD[::-1]
+
+
+def _is_sequential(v):
+    lv = v.lower()
+    return len(lv) >= 6 and (lv in _SEQ_FWD or lv in _SEQ_REV)
 
 # common non-secret strings that look structured
 _KNOWN_JUNK = {
@@ -256,6 +280,9 @@ def looks_placeholder(value):
     if len(v) < 8:
         return True
     if _PLACEHOLDER.search(v):
+        return True
+    # the whole value is a sequential/hex dummy filler (anchored, not incidental)
+    if _FILLER.fullmatch(v) or _is_sequential(v):
         return True
     # a value that is a single repeated char, or all identical, is junk
     if len(set(v)) <= 3:
@@ -313,10 +340,15 @@ def shannon(s):
     return -sum((c / n) * math.log2(c / n) for c in Counter(s).values())
 
 
-def entropy_in_window(window):
+def entropy_in_window(window, strict=False):
     """
     Return (value, offset, kind) for the first high-entropy token in a window
     around a sensitive keyword, else None. Called once per keyword anchor hit.
+
+    `strict` raises the length / entropy / digit bars. It is used when scanning
+    CODE (decompiled Java, smali, dex strings, JS), which is full of high-entropy
+    non-secrets (resource ids, hashes, proguard artefacts); config/resource files
+    use the looser bars. Both paths stay keyword-gated by the anchor dispatch.
     """
     m = _NEAR_TOKEN.search(window)
     if not m:
@@ -326,12 +358,14 @@ def entropy_in_window(window):
         return None
     is_hex = all(c in "0123456789abcdefABCDEF" for c in v)
     if is_hex:
-        if len(v) >= 40 and shannon(v) >= 3.0:
+        min_len, min_ent = (48, 3.3) if strict else (40, 3.0)
+        if len(v) >= min_len and shannon(v) >= min_ent:
             return v, m.start(1), "hex"
     else:
         # a real random base64 key almost always carries a few digits; an
         # all-alpha CamelCase blob is far more likely a word/identifier
         digits = sum(c.isdigit() for c in v)
-        if shannon(v) >= 4.0 and digits >= 2:
+        min_len, min_ent, min_dig = (32, 4.3, 3) if strict else (20, 4.0, 2)
+        if len(v) >= min_len and shannon(v) >= min_ent and digits >= min_dig:
             return v, m.start(1), "base64"
     return None

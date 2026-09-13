@@ -41,11 +41,41 @@ elsewhere):
 | **jadx** | Java decompilation (reconstructs constant strings) | `SHIELDSCOPE_JADX_JAR` → `jadx-*-all.jar` |
 | **apktool** | smali + decoded resources/manifest | `SHIELDSCOPE_APKTOOL_JAR` → `apktool.jar` |
 
+Optional extra engines (auto-detected; each just widens coverage when present):
+
+| Tool | Purpose | Env override |
+|---|---|---|
+| **dex2jar + CFR** | DEX→Java **fallback** when jadx is absent/times out (different decompilers recover different obfuscated classes; smali is still scanned alongside) | `SHIELDSCOPE_DEX2JAR` → dex-tools dir · `SHIELDSCOPE_CFR_JAR` → `cfr*.jar` |
+| **Ghidra** | decompiles native `.so` to C so native pinning/root logic + secrets become scannable (opt-in, heavy) | `SHIELDSCOPE_GHIDRA` → Ghidra dir; enable per-run with `SHIELDSCOPE_ENABLE_GHIDRA=1` |
+| **blutter** | Flutter `libapp.so` → Dart class/method dump (Flutter hides logic/secrets/pinning in an AOT snapshot) | `SHIELDSCOPE_BLUTTER` → `blutter.py` |
+| **hbctool** | React Native **Hermes** bytecode bundle → disassembly | on `PATH` (`pip install hbctool`) |
+| **frida-dexdump** | runtime-unpacks a **packed** app (PairIP/DexProtector/Bangcle/…) from a device and re-scans the recovered DEX | on `PATH` (`pip install frida-dexdump`); needs a device + frida-server |
+
 Install: `winget install Skylot.jadx` (then grab the CLI zip) / `apt install jadx apktool` /
-`brew install jadx apktool`. Other tuning: `SHIELDSCOPE_HEAP` (default `4g`),
-`SHIELDSCOPE_JADX_TIMEOUT` (default `900`s), `SHIELDSCOPE_APKTOOL_TIMEOUT` (default `300`s).
+`brew install jadx apktool`. dex2jar (`pxb1988/dex2jar`) and CFR (`cfr.jar`) are single
+downloads; Ghidra is the NSA suite. Other tuning: `SHIELDSCOPE_HEAP` (default `4g`),
+`SHIELDSCOPE_JADX_TIMEOUT` (default `600`s), `SHIELDSCOPE_APKTOOL_TIMEOUT` (default `300`s),
+`SHIELDSCOPE_DECOMPILE_FALLBACK=0` to disable the dex2jar+CFR path,
+`SHIELDSCOPE_GHIDRA_TIMEOUT` (default `600`s/lib) and `SHIELDSCOPE_GHIDRA_MAXLIBS` (default `8`).
 Every external tool runs under a hard timeout — a hostile app **cannot** hang the run.
-If jadx/apktool are missing the engine degrades gracefully (smali-only, then raw bytes).
+Coverage degrades gracefully: jadx → dex2jar+CFR → complete smali → raw bytes.
+
+### Extra capabilities
+
+- **Runtime unpack of packed apps** — when a commercial packer/RASP is detected and a
+  device is connected, `POST /api/ai/frida/dexdump` (package, device_id) dumps the
+  decrypted DEX with frida-dexdump and re-runs the full engine on it, surfacing findings
+  the packed APK hid. Needs frida-dexdump + a device.
+- **Secret liveness validation (opt-in, network)** — `python cli.py app.apk --validate-secrets`
+  (or `SHIELDSCOPE_VALIDATE_SECRETS=1`) probes each discovered vendor key with a single
+  READ-ONLY API call (GitHub, GitLab, Stripe, Slack, SendGrid, Telegram, npm, OpenAI,
+  HuggingFace, Google) and marks it **live / invalid / unknown**; live keys are promoted to
+  confirmed high-severity. Authorized testing only.
+- **Result cache** — `SHIELDSCOPE_CACHE=1` caches the static result by APK SHA-256
+  (`SHIELDSCOPE_CACHE_DIR`, default `~/.shieldscope/cache`), keyed by engine version so a
+  code change self-invalidates. Re-scanning an unchanged APK returns instantly.
+- **CORS** — the web API is restricted to the local UI origin (no wildcard), closing the
+  drive-by risk. Add origins with `SHIELDSCOPE_CORS_ORIGINS` (comma-separated).
 
 ## How it works (Android deep engine)
 
