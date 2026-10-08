@@ -43,6 +43,23 @@ def analyze(a, pkg=None):
     except Exception:
         root = None
 
+    # --- minSdk too low (runs known-vulnerable Android, weaker platform defaults) ---
+    try:
+        min_sdk = int(a.get_min_sdk_version())
+    except (TypeError, ValueError):
+        min_sdk = None
+    if min_sdk is not None and min_sdk < 24:
+        F.append(_f("min-sdk-low", "Low minSdkVersion (%d)" % min_sdk, "low", "config",
+            "AndroidManifest.xml -> uses-sdk minSdkVersion=%d" % min_sdk,
+            "The app supports Android API %d. Old versions miss platform hardening and run with "
+            "known-vulnerable OS components." % min_sdk,
+            "minSdk < 24 means APK Signature Scheme v2 isn't guaranteed (Janus exposure), user-added CAs are "
+            "trusted by default (easier MITM), and numerous OS-level vulnerabilities apply. minSdk < 21 is worse "
+            "(no runtime permissions, weaker WebView/crypto).",
+            ["Confirm the real device floor the app must support; raise minSdk if the old range isn't needed."],
+            "Raise minSdkVersion to a currently-supported API (>=24 removes the user-CA-trust and Janus defaults).",
+            evidence="minSdkVersion=%d" % min_sdk))
+
     # --- dangerous permissions inventory ---
     try:
         perms = a.get_permissions() or []

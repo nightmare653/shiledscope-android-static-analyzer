@@ -157,3 +157,23 @@ def test_anti_instrumentation_signals_detected(tmp_path):
 def test_packer_smali_signal_detected(tmp_path):
     found, _t, _a = _worker('.class Lcom/licel/dexprotector/DexGuard;\n', tmp_path=tmp_path)
     assert "app-shielding" in found
+
+
+# ---- behavioural code signals (HackTricks-aligned) ----
+def test_behavior_signals_app_owned(tmp_path):
+    smali = ('.class public Lcom/app/Web;\n'
+             '  invoke-virtual {p0}, Landroid/webkit/WebView;->addJavascriptInterface(Ljava/lang/Object;Ljava/lang/String;)V\n'
+             '  invoke-static {v0}, Landroid/content/Intent;->parseUri(Ljava/lang/String;I)Landroid/content/Intent;\n'
+             '  invoke-virtual {}, Ljava/lang/Runtime;->exec(Ljava/lang/String;)Ljava/lang/Process;\n')
+    found, _t, _a = _worker(smali, rel="com/app/Web.smali", tmp_path=tmp_path)
+    ids = {k[5:] for k in found if k.startswith("_beh_")}
+    assert {"intent-redirect", "cmd-exec"} <= ids
+    F = detect._build_behavior_findings({k[5:]: found[k] for k in found if k.startswith("_beh_")})
+    assert any(f["id"] == "intent-redirect" and f["severity"] == "high" for f in F)
+    assert all(f["location"] == "com.app.Web" for f in F)
+
+
+def test_behavior_signal_library_ignored(tmp_path):
+    smali = '.class public Landroidx/webkit/Internal;\n  ->addJavascriptInterface(\n'
+    found, _t, _a = _worker(smali, rel="androidx/webkit/Internal.smali", tmp_path=tmp_path)
+    assert not any(k.startswith("_beh_") for k in found)

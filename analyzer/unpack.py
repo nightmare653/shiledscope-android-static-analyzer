@@ -411,6 +411,29 @@ def _framework_decompile(up, tools, timeout=300):
         up.stages.append("React Native Hermes bundle(s) detected (%d) — install hbctool for "
                          "bytecode disasm; string literals are scanned regardless" % len(bundles))
 
+    # Xamarin / .NET: logic is in managed DLLs under assemblies/. Uncompressed
+    # DLLs are already string-scanned; XALZ/LZ4-compressed ones need decompression.
+    if _has_lib(up.raw_dir, ("libmonodroid.so", "libxamarin-app.so", "libmonosgen-2.0.so")):
+        dlls, compressed = [], False
+        for dp, _dn, fs in os.walk(up.raw_dir):
+            if os.path.basename(dp).lower() == "assemblies" or "assemblies" in dp.lower():
+                for fn in fs:
+                    if fn.lower().endswith(".dll"):
+                        dlls.append(fn)
+                        try:
+                            with open(os.path.join(dp, fn), "rb") as f:
+                                if f.read(4) == b"XALZ":
+                                    compressed = True
+                        except OSError:
+                            pass
+        if dlls:
+            up.stages.append("Xamarin/.NET detected: %d managed DLL(s)%s — %s" % (
+                len(dlls),
+                " (XALZ-compressed)" if compressed else "",
+                "decompress with xamarin-decompress then read with ILSpy/dnSpy for full coverage; "
+                "uncompressed DLLs are string-scanned regardless" if compressed else
+                "DLLs are string-scanned; decompile with ILSpy/dnSpy for full C# coverage"))
+
 
 # common runtime/framework .so that carry no app logic worth Ghidra time
 _SKIP_SO = {

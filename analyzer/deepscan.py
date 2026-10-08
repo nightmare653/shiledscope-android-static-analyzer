@@ -17,6 +17,7 @@ Hits are de-duplicated by (rule, value) and every location is kept.
 """
 
 import bisect
+import hashlib
 import os
 import re
 
@@ -401,7 +402,8 @@ def build_findings(raw_hits):
         loc = locs[0] + (" (+%d more)" % (len(locs) - 1) if len(locs) > 1 else "")
         desc, risk = _prose(rule, name)
         finding = {
-            "id": "secret-" + re.sub(r"\W+", "-", (rule + "-" + h["value"][:8]).lower()),
+            "id": "secret-" + rule + "-" + hashlib.sha1(
+                (h["value"] or "").encode("utf-8", "replace")).hexdigest()[:10],
             "rule": rule,
             "title": ("Likely secret: " if rule == "high-entropy" else "Hardcoded secret: ") + name,
             "severity": sev, "category": "secret",

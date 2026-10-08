@@ -243,7 +243,74 @@ _LIB_DOTTED = (
     "okhttp3.", "okio.", "retrofit2.", "com.squareup.", "com.microsoft.",
     "com.amazonaws.", "com.adobe.", "com.appsflyer.", "com.braze.", "com.stripe.",
     "com.google.firebase.", "kotlin.jvm.", "dagger.", "j$.",
+    # common third-party SDKs (analytics / marketing / WebView wrappers) whose
+    # own code legitimately uses these APIs — not the app's own logic.
+    "com.moengage.", "com.moe.", "com.pichillilorenzo.", "io.flutter.", "com.clevertap.",
+    "com.webengage.", "com.onesignal.", "io.sentry.", "com.flurry.", "com.mixpanel.",
+    "com.segment.", "com.newrelic.", "com.mparticle.", "com.airbnb.", "com.bumptech.",
+    "com.rudderstack.", "com.datadog.", "zendesk.", "com.zendesk.", "com.intercom.",
+    "com.cloudinary.", "com.paypal.", "com.braintreepayments.", "com.checkout.",
+    "io.reactivex.", "rx.", "com.android.", "androidx.webkit.", "org.chromium.",
 )
+
+
+# ---------------------------------------------------------------------------
+#  behavioural code signals (HackTricks-aligned): a method/API reference in an
+#  APP-OWNED class. Each yields a located finding. Tokens are smali method refs
+#  (present verbatim in apktool smali), so these survive renaming of the class.
+# ---------------------------------------------------------------------------
+_BEHAVIOR_SIGNALS = [
+    # ---- dangerous APIs / behaviours ----
+    {"id": "cmd-exec", "tokens": ["Ljava/lang/Runtime;->exec(", "Ljava/lang/ProcessBuilder;-><init>"],
+     "severity": "medium", "category": "code", "masvs": "MASVS-CODE-1",
+     "title": "OS command execution (Runtime.exec / ProcessBuilder)",
+     "desc": "The app executes OS commands via Runtime.exec()/ProcessBuilder.",
+     "risk": "If any part of the command is attacker-influenced (intent extra, deep link, file content), this is "
+             "command injection. Even fixed commands (e.g. probing for su) leak behaviour.",
+     "repro": ["Locate the exec/ProcessBuilder call and trace its arguments to any external input."],
+     "mit": "Avoid shelling out; if unavoidable, use a fixed argv array with no user input."},
+    {"id": "dynamic-code-load", "tokens": ["Ldalvik/system/DexClassLoader;", "Ldalvik/system/InMemoryDexClassLoader;"],
+     "severity": "medium", "category": "code", "masvs": "MASVS-CODE-2",
+     "title": "Dynamic code loading (DexClassLoader)",
+     "desc": "The app loads DEX/JAR code at runtime via DexClassLoader / InMemoryDexClassLoader.",
+     "risk": "If the loaded code comes from external storage, the network, or any writable/unverified location, an "
+             "attacker who controls that source achieves code execution in the app.",
+     "repro": ["Find the loader and the path/stream it loads; check whether the source is writable or unsigned."],
+     "mit": "Load only from the app's own signed APK; verify a signature before loading any external code."},
+    {"id": "sms-send", "tokens": ["->sendTextMessage(", "->sendMultipartTextMessage("],
+     "severity": "info", "category": "code", "masvs": "MASVS-CODE-1",
+     "title": "Sends SMS programmatically",
+     "desc": "The app sends SMS via SmsManager.",
+     "risk": "SMS-sending capability is abused by toll-fraud/malware; confirm it's user-initiated and not reachable "
+             "from an exported component or attacker input.",
+     "repro": ["Trace what triggers the send and whether the number/body are attacker-influenced."],
+     "mit": "Gate SMS sending behind explicit user action; never derive recipient/body from untrusted input."},
+    {"id": "intent-redirect", "tokens": ["Landroid/content/Intent;->parseUri("],
+     "severity": "high", "category": "platform", "masvs": "MASVS-PLATFORM-1",
+     "title": "Intent redirection (Intent.parseUri)",
+     "desc": "The app builds an Intent from a string via Intent.parseUri (often from a URL/deep link) and may launch it.",
+     "risk": "An attacker can craft an intent:// URI that targets a non-exported component, grants itself access to "
+             "providers, or redirects the app's identity (intent redirection / 'Intent injection').",
+     "repro": ["Reach the parseUri path with an intent:// payload (e.g. via a deep link) targeting an internal component."],
+     "mit": "Sanitize parsed Intents: strip component/package/flags, allowlist the action/data, never forward to startActivity with app permissions."},
+    {"id": "sql-raw-query", "tokens": ["->rawQuery(", "->execSQL("],
+     "severity": "info", "category": "code", "masvs": "MASVS-CODE-1",
+     "title": "Raw SQL queries (SQL-injection surface)",
+     "desc": "The app runs raw SQL via rawQuery/execSQL.",
+     "risk": "If any query is built by string concatenation with external input (intent/provider/file), it is SQL-injectable.",
+     "repro": ["Inspect the query strings for concatenation of user-controlled values."],
+     "mit": "Use parameterised queries (selectionArgs / bound parameters) exclusively."},
+    {"id": "biometric-auth", "tokens": ["Landroidx/biometric/BiometricPrompt", "Landroid/hardware/biometrics/BiometricPrompt",
+                                        "Landroid/hardware/fingerprint/FingerprintManager", "Landroid/app/KeyguardManager;->"],
+     "severity": "info", "category": "auth", "masvs": "MASVS-AUTH-2",
+     "title": "Local / biometric authentication present",
+     "desc": "The app uses BiometricPrompt / FingerprintManager / KeyguardManager for local authentication.",
+     "risk": "Local auth that only gates the UI (an onAuthenticationSucceeded callback) is Frida-bypassable; the "
+             "protected action must be re-authorised server-side or bound to a KeyStore key requiring auth.",
+     "repro": ["Frida-hook the success callback to always fire; confirm whether the sensitive action still requires the backend."],
+     "mit": "Bind sensitive operations to a biometric-gated KeyStore key (setUserAuthenticationRequired) and re-verify server-side."},
+]
+_BEH_BY_ID = {s["id"]: s for s in _BEHAVIOR_SIGNALS}
 
 
 def _smali_worker(files):
@@ -294,6 +361,18 @@ def _smali_worker(files):
                 cls = cm.group(1)[1:-1].replace("/", ".") if cm else rel
                 if not cls.startswith(_LIB_DOTTED):
                     found["pendingintent-mutable"] = cls
+        # behavioural code signals (webview config, dangerous APIs, intent redirect,
+        # biometric, clipboard, external storage) — first app-owned class wins.
+        for _bsig in _BEHAVIOR_SIGNALS:
+            _bk = "_beh_" + _bsig["id"]
+            if _bk in found:
+                continue
+            if any(t in text for t in _bsig["tokens"]):
+                cm = _CLASS_RE.search(text)
+                cls = cm.group(1)[1:-1].replace("/", ".") if cm else rel
+                if cls.startswith(_LIB_DOTTED):
+                    continue
+                found[_bk] = cls
         # hygiene presence flags (aggregated app-wide -> absence is the finding)
         if "_hyg_flagsecure" not in found and "FLAG_SECURE" in text:
             found["_hyg_flagsecure"] = "1"
@@ -545,6 +624,59 @@ def _scan_nsc(unpacked):
     return has_pin, cleartext, snippet
 
 
+def _nsc_trust_findings(unpacked):
+    """Network Security Config trust-anchor weaknesses: trusting user-installed
+    CAs (MITM-friendly) and shipping debug-overrides to production."""
+    F = []
+    if not unpacked.res_dir:
+        return F
+    xmldir = os.path.join(unpacked.res_dir, "xml")
+    if not os.path.isdir(deepscan._op(xmldir)):
+        return F
+    user_trust = debug_over = False
+    for fn in os.listdir(deepscan._op(xmldir)):
+        if not fn.endswith(".xml"):
+            continue
+        try:
+            with open(deepscan._op(os.path.join(xmldir, fn)), "rb") as f:
+                t = f.read(400_000).decode("utf-8", "replace")
+        except OSError:
+            continue
+        low = t.lower()
+        if "<certificates" in low and 'src="user"' in low.replace(" ", ""):
+            user_trust = True
+        if "<debug-overrides" in low:
+            debug_over = True
+    if user_trust:
+        F.append({
+            "id": "nsc-user-ca", "title": "Network Security Config trusts user-installed CAs",
+            "severity": "medium", "category": "config",
+            "location": "res/xml network security config -> <certificates src=\"user\">",
+            "evidence": "trust-anchors include src=\"user\"",
+            "description": "The app's Network Security Config trusts certificates added to the USER store, not "
+                           "just the system store.",
+            "risk": "Any user-installed CA (including a pentester's or malware's) is trusted, so TLS can be "
+                    "intercepted with just a proxy CA — this also defeats the Android 7+ default that ignores "
+                    "user CAs. On a sensitive app this is effectively opt-in MITM.",
+            "reproduce": ["Install a proxy CA in the user store and route traffic through Burp — it decrypts without root."],
+            "mitigation": "Trust only the system store (remove src=\"user\"); pin certificates for sensitive domains.",
+            "masvs": "MASVS-NETWORK-1"})
+    if debug_over:
+        F.append({
+            "id": "nsc-debug-overrides", "title": "Network Security Config ships <debug-overrides>",
+            "severity": "low", "category": "config",
+            "location": "res/xml network security config -> <debug-overrides>",
+            "evidence": "<debug-overrides> present",
+            "description": "A <debug-overrides> block is present in the shipped config.",
+            "risk": "debug-overrides apply only when android:debuggable is true, but their presence often means "
+                    "relaxed trust (extra CAs) was intended for testing — verify the release build isn't debuggable "
+                    "and that these anchors can't be reached.",
+            "reproduce": ["Confirm the release APK is not debuggable; review the debug-overrides trust anchors."],
+            "mitigation": "Remove debug-overrides from release configs; never ship test trust anchors.",
+            "masvs": "MASVS-NETWORK-2"})
+    return F
+
+
 # ---------------------------------------------------------------------------
 #  obfuscation score
 # ---------------------------------------------------------------------------
@@ -576,6 +708,27 @@ def _obfuscation(unpacked, sample=4000):
 # ---------------------------------------------------------------------------
 #  entry point
 # ---------------------------------------------------------------------------
+def _build_behavior_findings(beh):
+    """Rich located findings from behavioural signals (beh: id -> app class)."""
+    F = []
+    order = {"high": 0, "medium": 1, "low": 2, "info": 3}
+    for sid, cls in beh.items():
+        sig = _BEH_BY_ID.get(sid)
+        if not sig:
+            continue
+        api = sig["tokens"][0].split("->")[-1].rstrip("(").lstrip("L") or sig["tokens"][0]
+        F.append({
+            "id": sig["id"], "title": sig["title"],
+            "severity": sig["severity"], "category": sig["category"],
+            "location": cls, "evidence": "%s uses %s" % (cls, api),
+            "description": sig["desc"], "risk": sig["risk"],
+            "reproduce": sig["repro"], "mitigation": sig["mit"],
+            "masvs": sig["masvs"],
+        })
+    F.sort(key=lambda f: order.get(f["severity"], 9))
+    return F
+
+
 def _build_code_findings(webview_taint, pi_mutable, target_sdk):
     F = []
     if webview_taint:
@@ -804,8 +957,11 @@ def analyze(unpacked, workers=4, target_sdk=None):
     webview_taint = smali_hits.pop("webview-taint", None)
     pi_mutable = smali_hits.pop("pendingintent-mutable", None)
     hyg = {k[5:]: smali_hits.pop(k) for k in list(smali_hits) if k.startswith("_hyg_")}
+    beh = {k[5:]: smali_hits.pop(k) for k in list(smali_hits) if k.startswith("_beh_")}
     native_hits, so_names = _scan_native(unpacked)
     misc = _build_code_findings(webview_taint, pi_mutable, target_sdk)
+    misc += _build_behavior_findings(beh)
+    misc += _nsc_trust_findings(unpacked)
     misc += _native_hardening(unpacked)
     misc += _build_hygiene_findings(hyg, _scan_keyboard_cache(unpacked))
     frameworks = _detect_frameworks(so_names, unpacked)

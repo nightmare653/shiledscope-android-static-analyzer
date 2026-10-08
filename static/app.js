@@ -74,84 +74,101 @@
       ? `<span class="pill ssl">SSL pinning · ${d.ssl.layers} layer${d.ssl.layers>1?"s":""}</span>`
       : `<span class="pill none">No SSL pinning</span>`);
 
-    let html = `
-    <div class="summary">
-      <div class="card">
-        <h2>${isApk ? "APK" : "IPA"} · ${esc(d.file.name)}</h2>
-        ${metaRows.map(([k,v]) => `<div class="metaline"><span class="k">${esc(k)}</span><span class="v">${esc(v==null?"—":String(v))}</span></div>`).join("")}
-        <div class="metaline"><span class="k">SHA-256</span><span class="v" style="font-size:11px">${esc(d.file.sha256)}</span></div>
-      </div>
-      <div class="card">
-        <h2>Protection strength</h2>
-        <div class="gauge">
-          <div class="ring" style="--v:${d.score}"><b>${d.score}</b></div>
-          <div>
-            <div class="rating">${esc(d.rating)}</div>
-            <div class="rlabel">heuristic score / 100</div>
-            <div class="pillrow">${pills.join("")}</div>
-          </div>
+    // ---- build each section (reusing the existing block builders) ----
+    const overviewHtml = `
+      <div class="summary">
+        <div class="card">
+          <h2>${isApk ? "APK" : "IPA"} · ${esc(d.file.name)}</h2>
+          ${metaRows.map(([k,v]) => `<div class="metaline"><span class="k">${esc(k)}</span><span class="v">${esc(v==null?"—":String(v))}</span></div>`).join("")}
+          <div class="metaline"><span class="k">SHA-256</span><span class="v" style="font-size:11px">${esc(d.file.sha256)}</span></div>
         </div>
-        ${signingMini(d.signing)}
-        ${engineMini(d)}
-      </div>
-    </div>
-    ${exportBar()}
-    <div class="aiplan"><button class="mini" id="aiPlan">🤖 AI pentest plan</button>
-      <span class="aiplanhint">Uses your configured model to turn these findings into a prioritised attack plan.</span>
-      <div id="aiPlanOut"></div></div>`;
+        <div class="card">
+          <h2>Protection strength</h2>
+          <div class="gauge">
+            <div class="ring" style="--v:${d.score}"><b>${d.score}</b></div>
+            <div>
+              <div class="rating">${esc(d.rating)}</div>
+              <div class="rlabel">heuristic score / 100</div>
+              <div class="pillrow">${pills.join("")}</div>
+            </div>
+          </div>
+          ${signingMini(d.signing)}
+          ${engineMini(d)}
+        </div>
+      </div>` +
+      ((d.frameworks && d.frameworks.length) ? `<div class="notes"><h3>App framework</h3><ul>` +
+        d.frameworks.map(f => `<li><strong>${esc(f.name)}</strong>${f.note ? " — " + esc(f.note) : ""}</li>`).join("") + `</ul></div>` : "") +
+      ((d.notes && d.notes.length) ? `<div class="notes"><h3>Notes</h3><ul>` +
+        d.notes.map(n => `<li>${esc(n)}</li>`).join("") + `</ul></div>` : "");
 
-    // framework notes
-    if (d.frameworks && d.frameworks.length) {
-      html += `<div class="notes"><h3>App framework</h3><ul>` +
-        d.frameworks.map(f => `<li><strong>${esc(f.name)}</strong>${f.note ? " — " + esc(f.note) : ""}</li>`).join("") +
-        `</ul></div>`;
-    }
-    // analysis notes
-    if (d.notes && d.notes.length) {
-      html += `<div class="notes"><h3>Notes</h3><ul>` +
-        d.notes.map(n => `<li>${esc(n)}</li>`).join("") + `</ul></div>`;
-    }
+    const protectionHtml =
+      mechBlock("Root / Jailbreak detection", "root", d.root, isApk) +
+      mechBlock("SSL / Certificate pinning", "ssl", d.ssl, isApk);
 
-    html += mechBlock("Root / Jailbreak detection", "root", d.root, isApk);
-    html += mechBlock("SSL / Certificate pinning", "ssl", d.ssl, isApk);
+    const findingsHtml = masvsBlock(d.extra || []) || `<p class="empty">No additional findings.</p>`;
+    const surfaceHtml = (ipcBlock(d.ipc || []) + apiBlock(d.api) + surfaceBlock(d.surface))
+      || `<p class="empty">No attack-surface data harvested.</p>`;
 
-    // MASVS extra findings
-    html += masvsBlock(d.extra || []);
-
-    // IPC attack surface (exported components + PoC)
-    html += ipcBlock(d.ipc || []);
-
-    // API endpoints + per-endpoint pentest playbooks
-    html += apiBlock(d.api);
-
-    // network attack surface (URLs / buckets / IPs)
-    html += surfaceBlock(d.surface);
-
-    // auto-generated Frida bypass script
-    html += fridaBlock(d.frida);
-
-    // guides
+    let bypassHtml = fridaBlock(d.frida);
     if (d.guides && d.guides.length) {
-      html += `<div class="block"><h2>🔓 Bypass playbooks (${d.guides.length})</h2>
-        <p class="lead">Step-by-step guides for exactly the mechanisms found above. Expand each. Ordered easy → hard.</p>`;
       const order = { easy: 0, medium: 1, hard: 2 };
       const gs = d.guides.slice().sort((a,b) => (order[a.difficulty]??9)-(order[b.difficulty]??9));
-      html += gs.map(renderGuide).join("");
-      html += `</div>`;
+      bypassHtml += `<div class="block"><h2>🔓 Bypass playbooks (${d.guides.length})</h2>
+        <p class="lead">Step-by-step guides for exactly the mechanisms found. Ordered easy → hard.</p>` +
+        gs.map(renderGuide).join("") + `</div>`;
     }
 
-    html += `<p class="disclaimer">⚠️ Static analysis infers mechanisms from bytes/strings and can miss heavily
-      obfuscated or server-side checks (and occasionally over-report shared library code). Confirm dynamically
-      before drawing conclusions. Use only on apps you are authorized to test.</p>`;
+    const checklistHtml = window.SSChecklist ? window.SSChecklist.tabHtml(d) : `<p class="empty">Checklist module not loaded.</p>`;
 
-    resultsEl.innerHTML = html;
+    const nFindings = (d.extra || []).length;
+    const nSurface = (d.ipc ? d.ipc.length : 0) + (d.api && d.api.counts ? (d.api.counts.total || 0) : 0);
+    const nProt = (d.root.layers || 0) + (d.ssl.layers || 0);
+
+    const tabs = [
+      { id: "overview", label: "Overview", html: overviewHtml },
+      { id: "protection", label: "Protection", badge: nProt, html: protectionHtml || `<p class="empty">No root/pinning mechanisms detected.</p>` },
+      { id: "findings", label: "Findings", badge: nFindings, html: findingsHtml },
+      { id: "surface", label: "Attack surface", badge: nSurface, html: surfaceHtml },
+      { id: "bypass", label: "Bypass", html: bypassHtml || `<p class="empty">No bypass material.</p>` },
+      { id: "checklist", label: "Checklist", icon: "✅", html: checklistHtml },
+    ];
+
+    const toolbar = `<div class="toolbar">
+        <div class="tb-title"><span class="tb-name">${esc(d.file.name)}</span>
+          <span class="tb-score sc-${d.score>=80?"hi":d.score>=55?"mid":d.score>=25?"lo":"none"}">${d.score}/100 · ${esc(d.rating)}</span></div>
+        <div class="tb-actions">${exportBar()}<button class="mini" id="aiPlan">🤖 AI plan</button></div>
+      </div>
+      <div id="aiPlanOut"></div>`;
+
+    const tabbar = `<div class="tabbar">` + tabs.map((t,i) =>
+      `<button class="tab ${i===0?"active":""}" data-tab="${t.id}">${t.icon?t.icon+" ":""}${t.label}` +
+      (t.badge ? `<span class="tabcount">${t.badge}</span>` : "") + `</button>`).join("") + `</div>`;
+
+    const panes = `<div class="tabpanes">` + tabs.map((t,i) =>
+      `<div class="tabpane ${i===0?"":"hidden"}" data-pane="${t.id}">${t.html}</div>`).join("") + `</div>`;
+
+    resultsEl.innerHTML = toolbar + tabbar + panes +
+      `<p class="disclaimer">⚠️ Static analysis infers from bytes/strings and can miss obfuscated or server-side checks. Confirm dynamically. Authorized testing only.</p>`;
+
+    wireTabs(resultsEl);
     wireFrida(d.frida);
     wireIpc();
     wireExport(d);
     lastResult = d;
     wireAI(d);
+    if (window.SSChecklist) window.SSChecklist.wire(d, resultsEl);
     resultsEl.classList.remove("hidden");
     resultsEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  function wireTabs(rootEl) {
+    const tabs = rootEl.querySelectorAll(".tabbar .tab");
+    const panes = rootEl.querySelectorAll(".tabpanes .tabpane");
+    tabs.forEach(btn => btn.addEventListener("click", () => {
+      tabs.forEach(b => b.classList.toggle("active", b === btn));
+      panes.forEach(p => p.classList.toggle("hidden", p.dataset.pane !== btn.dataset.tab));
+      rootEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    }));
   }
 
   function signingMini(s) {

@@ -28,7 +28,7 @@ def _sha256(path):
 
 
 # Bump when detection/scanning logic changes so the on-disk cache self-invalidates.
-_ENGINE_VERSION = "2026.09-1"
+_ENGINE_VERSION = "2026.10-3"
 
 
 def _cache_dir():
@@ -152,6 +152,18 @@ _MASVS_BY_ID = {
     "sign-janus": "MASVS-RESILIENCE-3", "sign-debug-cert": "MASVS-RESILIENCE-3",
     "sign-unsigned": "MASVS-RESILIENCE-3", "sign-expired": "MASVS-RESILIENCE-3",
     "sign-weak-key": "MASVS-CRYPTO-1", "sign-weak-hash": "MASVS-CRYPTO-1",
+    "cmd-exec": "MASVS-CODE-1", "dynamic-code-load": "MASVS-CODE-2",
+    "sms-send": "MASVS-CODE-1", "sql-raw-query": "MASVS-CODE-1",
+    "intent-redirect": "MASVS-PLATFORM-1", "biometric-auth": "MASVS-AUTH-2",
+    "external-storage": "MASVS-STORAGE-2", "webview-debugging": "MASVS-RESILIENCE-4",
+    "ios-url-scheme": "MASVS-PLATFORM-1", "ios-universal-link": "MASVS-PLATFORM-1",
+    "ios-pasteboard": "MASVS-PLATFORM-3", "ios-keychain-weak": "MASVS-STORAGE-1",
+    "ios-local-auth": "MASVS-AUTH-2", "ios-uiwebview": "MASVS-PLATFORM-2",
+    "ios-wkwebview-file": "MASVS-PLATFORM-2", "ios-fileprotection-none": "MASVS-STORAGE-1",
+    "ios-hotpatch": "MASVS-RESILIENCE-3", "ios-nsuserdefaults": "MASVS-STORAGE-1",
+    "ios-native-hardening": "MASVS-CODE-4", "ios-nslog": "MASVS-STORAGE-2",
+    "nsc-user-ca": "MASVS-NETWORK-1", "nsc-debug-overrides": "MASVS-NETWORK-2",
+    "min-sdk-low": "MASVS-RESILIENCE-3",
 }
 _MASVS_BY_CAT = {
     "secret": "MASVS-STORAGE-1", "crypto": "MASVS-CRYPTO-2", "pii": "MASVS-PRIVACY-1",

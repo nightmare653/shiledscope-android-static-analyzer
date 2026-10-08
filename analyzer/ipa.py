@@ -57,16 +57,10 @@ def _main_binary_name(info, app_root):
 
 
 def _lief_scan(macho_bytes):
-    """Return (symbols:set[str], encrypted:bool|None, arch:str|None) via LIEF."""
-    syms, encrypted, arch = set(), None, None
+    """Return (symbols:set[str], encrypted:bool|None, arch:str|None, pie:bool|None)."""
+    syms, encrypted, arch, pie = set(), None, None, None
     try:
         import lief
-        fat = lief.MachO.parse(raw=list(macho_bytes)) if False else None
-    except Exception:
-        fat = None
-    try:
-        import lief
-        # LIEF prefers a path; write to a temp buffer file
         import tempfile
         with tempfile.NamedTemporaryFile(delete=False, suffix=".macho") as tf:
             tf.write(macho_bytes)
@@ -89,6 +83,13 @@ def _lief_scan(macho_bytes):
                         encrypted = b.encryption_info.crypt_id != 0
                 except Exception:
                     pass
+                try:
+                    pie = lief.MachO.HEADER_FLAGS.PIE in b.header.flags_list
+                except Exception:
+                    try:
+                        pie = bool(b.is_pie)
+                    except Exception:
+                        pass
         finally:
             try:
                 os.unlink(tmp)
@@ -96,7 +97,7 @@ def _lief_scan(macho_bytes):
                 pass
     except Exception:
         pass
-    return syms, encrypted, arch
+    return syms, encrypted, arch, pie
 
 
 def _match(sig, blob, symbols):
@@ -168,7 +169,7 @@ def analyze(ipa_path):
             except Exception:
                 pass
 
-    symbols, encrypted, arch = _lief_scan(macho) if macho else (set(), None, None)
+    symbols, encrypted, arch, pie = _lief_scan(macho) if macho else (set(), None, None, None)
     meta["encrypted"] = encrypted
     meta["arch"] = arch
     if encrypted:
@@ -253,6 +254,8 @@ def analyze(ipa_path):
              + masvs.ios_config(info)
              + storage.build_ios_code_findings(storage_presence)
              + _entitlements_findings(z, app_root, names)
+             + _ios_url_findings(info)
+             + _ios_behavior_findings(blob, symbols, pie, bool(encrypted))
              + db_findings)
     z.close()
 
@@ -326,4 +329,118 @@ def _entitlements_findings(z, app_root, names):
             "reproduce": ["Inspect Entitlements.application-identifier in the provisioning profile."],
             "mitigation": "Use an explicit App ID per app and scope entitlements tightly.",
             "masvs": "MASVS-CODE-1"})
+    return F
+
+
+# ---------------------------------------------------------------------------
+#  iOS URL schemes / universal links / behavioural string+symbol signals
+# ---------------------------------------------------------------------------
+def _ios_url_findings(info):
+    """Custom URL schemes the app registers (attacker-invocable deep links)."""
+    F = []
+    schemes = []
+    for t in (info or {}).get("CFBundleURLTypes", []) or []:
+        for s in (t.get("CFBundleURLSchemes") or []):
+            if s:
+                schemes.append(s)
+    schemes = sorted(set(schemes))
+    if schemes:
+        F.append({
+            "id": "ios-url-scheme",
+            "title": "Custom URL schemes registered (%d)" % len(schemes),
+            "severity": "low", "category": "platform",
+            "location": "Info.plist -> CFBundleURLTypes",
+            "evidence": ", ".join(schemes[:12]) + ("..." if len(schemes) > 12 else ""),
+            "description": "The app registers custom URL scheme(s): %s. Any app (or a web page) can open "
+                           "these and pass parameters the app will parse." % ", ".join(schemes[:12]),
+            "risk": "Custom schemes are not verified (unlike Universal Links), so a malicious app can "
+                    "impersonate them, and crafted parameters can drive deep-link handlers, WebViews or "
+                    "auth callbacks (open redirect / account takeover / parameter injection).",
+            "reproduce": ["Open the scheme: xcrun simctl openurl booted '%s://host/path?x=1' (or Safari)." % schemes[0],
+                          "Fuzz the handler params; check for sensitive data in the URL or missing validation."],
+            "mitigation": "Prefer Universal Links (verified) for sensitive flows; validate every parameter and never "
+                          "trust scheme input for auth or to build file paths/WebView URLs.",
+            "masvs": "MASVS-PLATFORM-1"})
+    return F
+
+
+# (id, [byte tokens], severity, title, desc, risk, repro[list], mit)
+_IOS_STRING_SIGNALS = [
+    ("ios-wkwebview-file", [b"allowFileAccessFromFileURLs", b"allowingReadAccessToURL"], "medium",
+     "WKWebView file access configured",
+     "The binary enables WKWebView file access (allowFileAccessFromFileURLs / allowingReadAccessToURL).",
+     "Allowing file:// access lets JavaScript in a file context read local files (app data, cookies); a file:// "
+     "XSS becomes local-file theft.",
+     ["Check whether untrusted HTML can be loaded with file access enabled."],
+     "Do not grant file access to a WKWebView loading untrusted content; scope allowingReadAccessToURL tightly."),
+    ("ios-keychain-weak", [b"kSecAttrAccessibleAlways"], "medium",
+     "Weak Keychain accessibility (kSecAttrAccessibleAlways)",
+     "Keychain items are stored with kSecAttrAccessibleAlways(ThisDeviceOnly) - accessible even when locked.",
+     "Items readable while locked are exposed to lock-screen / offline-extraction attacks.",
+     ["Enumerate keychain items (objection: ios keychain dump) and check the accessibility attribute."],
+     "Use kSecAttrAccessibleWhenUnlockedThisDeviceOnly (or WhenPasscodeSetThisDeviceOnly) for secrets."),
+    ("ios-local-auth", [b"LAContext", b"evaluatePolicy"], "info",
+     "Local / biometric authentication present (LocalAuthentication)",
+     "The app uses LAContext/evaluatePolicy (Face ID / Touch ID).",
+     "If evaluatePolicy only gates the UI, it is Frida/objection-bypassable; the protected action must be bound to "
+     "a Keychain/Secure-Enclave key requiring biometric auth and re-checked server-side.",
+     ["Objection: ios ui biometrics_bypass, or hook evaluatePolicy's reply block to success.",
+      "Confirm the sensitive action still requires the backend after the bypass."],
+     "Bind the protected secret to a SecAccessControl with biometryCurrentSet; never trust the boolean alone."),
+    ("ios-fileprotection-none", [b"NSFileProtectionNone"], "medium",
+     "Data Protection disabled (NSFileProtectionNone)",
+     "The app writes files with NSFileProtectionNone, so they are not encrypted at rest.",
+     "Unprotected files are readable from a backup or an offline/locked-device extraction.",
+     ["Identify files written with NSFileProtectionNone and whether they hold sensitive data."],
+     "Use NSFileProtectionComplete (or CompleteUnlessOpen) for sensitive files."),
+    ("ios-hotpatch", [b"JSPatch", b"CodePush", b"Rollout.io"], "medium",
+     "Dynamic code-update / hot-patch framework",
+     "The app bundles a hot-patch / dynamic code framework (JSPatch / CodePush / Rollout).",
+     "Server-delivered code can bypass App Store review and, if the channel is MITM-able or compromised, lead to "
+     "remote code execution.",
+     ["Identify the update channel and whether it is TLS-pinned and signature-verified."],
+     "Avoid remote code delivery; if used, pin TLS and verify a signature on every payload."),
+]
+
+
+def _ios_behavior_findings(blob, symbols, pie, encrypted):
+    """iOS string/symbol signals + binary hardening (PIE / stack-canary / ARC)."""
+    F = []
+    for sid, tokens, sev, title, desc, risk, repro, mit in _IOS_STRING_SIGNALS:
+        hit = next((t for t in tokens if t in blob), None)
+        if not hit:
+            continue
+        F.append({
+            "id": sid, "title": title, "severity": sev, "category": "platform",
+            "location": "app binary", "evidence": hit.decode("ascii", "replace"),
+            "description": desc, "risk": risk, "reproduce": repro, "mitigation": mit,
+            "masvs": "MASVS-PLATFORM-2"})
+    if symbols and any(s in ("_NSLog", "NSLog") for s in symbols):
+        F.append({
+            "id": "ios-nslog", "title": "NSLog logging present", "severity": "info",
+            "category": "storage", "location": "app binary", "evidence": "NSLog",
+            "description": "The binary calls NSLog, which writes to the unified logging system.",
+            "risk": "NSLog output can leak tokens/PII to device logs readable via Console/sysdiagnose.",
+            "reproduce": ["Stream the device log (Console.app / log stream) while exercising the app."],
+            "mitigation": "Strip NSLog in release; never log secrets/PII.", "masvs": "MASVS-STORAGE-2"})
+    if not encrypted and pie is not None:
+        missing = []
+        if pie is False:
+            missing.append("PIE/ASLR")
+        if symbols and not any("__stack_chk_fail" in s for s in symbols):
+            missing.append("stack-canary")
+        if symbols and not any(("objc_release" in s) or ("objc_storeStrong" in s)
+                               or ("swift_release" in s) for s in symbols):
+            missing.append("ARC")
+        if missing:
+            F.append({
+                "id": "ios-native-hardening",
+                "title": "Binary missing exploit mitigations (%s)" % ", ".join(missing),
+                "severity": "low", "category": "hardening", "location": "app binary",
+                "evidence": ", ".join(missing),
+                "description": "The main Mach-O is built without standard mitigations: " + ", ".join(missing) + ".",
+                "risk": "Missing PIE (no ASLR), stack canary or ARC makes memory-corruption bugs materially easier to exploit.",
+                "reproduce": ["otool -hv <binary> (PIE flag); otool -Iv | grep stack_chk (canary)."],
+                "mitigation": "Rebuild with -fPIE -pie, -fstack-protector-strong, and ARC enabled.",
+                "masvs": "MASVS-CODE-4"})
     return F

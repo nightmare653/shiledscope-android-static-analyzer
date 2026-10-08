@@ -331,6 +331,11 @@ def keyword_near(text, start, end, window=48):
 # leaving real base64/hex tokens intact.
 _NEAR_TOKEN = re.compile(r"['\"=:\s]([A-Za-z0-9+/]{20,120})['\"]?")
 
+# smali/Java class or type references ("Lcom/google/.../Name", "com/x/Y") are long
+# and look high-entropy, but are never secrets — the keyword that gated the window
+# is usually a word INSIDE the class name (crypto, Key, Token, Secret...).
+_CLASSREF_RE = re.compile(r"^L?[a-z][a-z0-9]*(?:/[a-z][\w$]*)+/[\w$]+;?$")
+
 
 def shannon(s):
     if not s:
@@ -356,6 +361,8 @@ def entropy_in_window(window, strict=False):
     v = m.group(1)
     if len(v) < 20:
         return None
+    if _CLASSREF_RE.match(v):
+        return None            # smali/Java class descriptor, not a secret
     is_hex = all(c in "0123456789abcdefABCDEF" for c in v)
     if is_hex:
         min_len, min_ent = (48, 3.3) if strict else (40, 3.0)
