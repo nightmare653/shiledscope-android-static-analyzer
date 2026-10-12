@@ -179,16 +179,25 @@ _NATIVE_SIGNALS = [
      ["frida-native-rasp", "magisk-denylist"],
      [b"talsec", b"freerasp", b"AppSecureRoom"]),
     ("flutter-pinning", "ssl", "native", "medium", "Flutter TLS customisation / pinning",
-     "Dart TLS customisation (badCertificateCallback / setTrustedCertificatesBytes) "
-     "in Flutter native code. Flutter ships its own BoringSSL trust store, so bypass "
-     "needs reFlutter or a libflutter.so hook — Java/objection hooks will NOT work.",
+     "Dart TLS customisation / certificate pinning in Flutter native code "
+     "(badCertificateCallback / setTrustedCertificatesBytes, or a pinning plugin such as "
+     "http_certificate_pinning / ssl_pinning_plugin). Flutter ships its own BoringSSL trust "
+     "store, so bypass needs reFlutter or a libflutter.so hook — Java/objection hooks will NOT work.",
      ["flutter-ssl"],
-     [b"badCertificateCallback", b"setTrustedCertificatesBytes"]),
+     [b"badCertificateCallback", b"setTrustedCertificatesBytes", b"http_certificate_pinning",
+      b"ssl_pinning_plugin", b"HttpCertificatePinning", b"CertificatePinning"]),
     ("anti-frida-native", "root", "native", "medium", "Native anti-Frida / anti-debug",
      "Native code probes for Frida or a debugger (frida strings, gum, TracerPid) — "
      "needs a native hook / patch to defeat.",
      ["frida-antihook", "frida-antidebug"],
      [b"gum-js-loop", b"re.frida.server", b"frida-agent", b"LIBFRIDA", b"TracerPid"]),
+    ("native-emulator", "root", "native", "medium", "Native emulator / sandbox detection",
+     "Native code probes for an emulator or sandbox (QEMU goldfish/ranchu, Genymotion, "
+     "BlueStacks, VirtualBox) — common in RASP and anti-analysis layers. Needs a native "
+     "hook/patch to defeat (Java emulator-check bypasses will not reach it).",
+     ["frida-rootbeer", "objection-root"],
+     [b"ro.kernel.qemu", b"qemu_pipe", b"init.goldfish", b"goldfish", b"ranchu",
+      b"genymotion", b"bluestacks", b"vbox86", b"nox-prop"]),
 ]
 
 _LIB_PREFIXES = (
@@ -642,7 +651,10 @@ def _scan_native(unpacked):
             ap = os.path.join(dp, fn)
             try:
                 with open(ap, "rb") as f:
-                    b = f.read(24 * 1024 * 1024)
+                    # Flutter/Unity/Xamarin pack all app logic into one large .so
+                    # (libapp.so / libil2cpp.so can be tens of MB); read enough that
+                    # pinning / anti-debug strings late in the blob aren't truncated.
+                    b = f.read(96 * 1024 * 1024)
             except OSError:
                 continue
             for sig in _NATIVE_SIGNALS:
@@ -684,9 +696,44 @@ def _detect_frameworks(so_names, unpacked):
     for fid, fname, lib, note, guides in _FRAMEWORK_LIBS:
         if lib in names:
             fws.append({"id": fid, "name": fname, "note": note, "guides": guides})
-    # cordova: assets/www/cordova.js
-    for _dp, _dn, _fs in os.walk(deepscan._op(unpacked.raw_dir)):
-        pass
+
+    # Hybrid web frameworks (Cordova / Capacitor / Ionic) ship no distinctive .so —
+    # the app is HTML/JS running in a WebView under assets/. Detect by marker files.
+    cordova = capacitor = ionic = False
+    base = deepscan._op(unpacked.raw_dir)
+    for dp, _dn, fs in os.walk(base):
+        dl = dp.replace("\\", "/").lower()
+        under_web = ("/assets/www" in dl or "/assets/public" in dl or dl.endswith("/assets"))
+        if dl.endswith("/assets/public"):
+            capacitor = True
+        for fn in fs:
+            low = fn.lower()
+            if low in ("cordova.js", "cordova_plugins.js"):
+                cordova = True
+            elif low in ("capacitor.config.json", "capacitor.plugins.json"):
+                capacitor = True
+            elif low == "config.xml" and under_web:
+                cordova = True
+            if under_web and (low.startswith("ionic") or low == "ionic.config.json"):
+                ionic = True
+    if capacitor:
+        fws.append({"id": "capacitor", "name": "Capacitor (hybrid WebView)",
+                    "note": "App UI/logic is HTML/JS in a WebView (assets/public). Inspect the bundled "
+                            "JS for secrets, endpoints and auth logic; SSL pinning (if any) is usually a "
+                            "Capacitor/Cordova plugin, so a system-CA + proxy or frida-ssl-universal often "
+                            "suffices. Also audit the native bridge (@CapacitorPlugin) for exposed methods.",
+                    "guides": ["frida-ssl-universal"]})
+    elif cordova:
+        fws.append({"id": "cordova", "name": "Apache Cordova / PhoneGap (hybrid WebView)",
+                    "note": "App UI/logic is HTML/JS in a WebView (assets/www). Inspect the bundled JS for "
+                            "secrets, endpoints and auth logic; SSL pinning (if any) is usually a Cordova "
+                            "plugin (cordova-plugin-advanced-http), so a system-CA + proxy or "
+                            "frida-ssl-universal often suffices. Audit exposed plugins / the JS bridge.",
+                    "guides": ["frida-ssl-universal"]})
+    if ionic:
+        fws.append({"id": "ionic", "name": "Ionic (hybrid WebView UI)",
+                    "note": "Ionic UI layer riding on Cordova/Capacitor — same WebView/JS attack surface.",
+                    "guides": []})
     return fws
 
 

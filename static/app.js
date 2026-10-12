@@ -322,8 +322,14 @@
   }
 
   // IDs that are anti-tamper / integrity verification (surfaced in their own tab)
+  // Anti-tamper / integrity / RASP / anti-analysis mechanisms — shown in the Tamper
+  // tab instead of the Root/JB block (which keeps genuine root/jailbreak detection:
+  // su, root packages, Magisk, RootBeer, SafetyNet, Play Integrity, PairIP).
   const TAMPER_IDS = ["sig-verify", "installer-check", "integrity-checksum",
     "js-tamper-protection", "codepush-signing", "native-rasp",
+    "app-shielding", "freerasp",
+    "anti-debug", "anti-frida", "anti-xposed", "emulator-check",
+    "anti-frida-native", "native-emulator",
     "ios-code-integrity", "ios-js-tamper"];
 
   function mechCard(mech) {
@@ -351,14 +357,14 @@
 
   function tamperBlock(d, isApk) {
     const mechs = ((d.root && d.root.mechanisms) || []).filter(m => TAMPER_IDS.indexOf(m.id || "") !== -1);
-    let h = `<div class="block"><h2><span class="dot root"></span>🛡️ Tamper / integrity protection</h2>`;
+    let h = `<div class="block"><h2><span class="dot root"></span>🛡️ Tamper / integrity &amp; anti-analysis</h2>`;
     if (!mechs.length) {
-      h += `<div class="empty">No anti-tamper / integrity verification detected by static signatures.
-        The app does not appear to check its own signature, installer source, code checksum${isApk ? "" : ", SecCode validity"} or JS-bundle integrity at runtime —
-        repackaging, re-signing and code patching face no in-app resistance.</div></div>`;
+      h += `<div class="empty">No anti-tamper / integrity / anti-analysis defenses detected by static signatures.
+        The app does not appear to check its own signature, installer source, code checksum${isApk ? "" : ", SecCode validity"} or JS-bundle integrity,
+        nor to run RASP / anti-debug / anti-Frida / emulator checks — repackaging, re-signing, patching and dynamic instrumentation face no in-app resistance.</div></div>`;
       return h;
     }
-    h += `<p class="lead">${mechs.length} tamper/integrity mechanism${mechs.length>1?"s":""} detected. These resist repackaging, re-signing and runtime code patching.</p>`;
+    h += `<p class="lead">${mechs.length} mechanism${mechs.length>1?"s":""} detected — integrity/anti-repackaging, RASP, and anti-analysis (anti-debug / anti-Frida / emulator). These resist repackaging, re-signing, patching and dynamic instrumentation. <em>Root/jailbreak detection and attestation (SafetyNet, Play Integrity, PairIP) stay in the Protection tab.</em></p>`;
     h += mechs.map(mechCard).join("");
     const g = (d.guides || []).find(x => x.id === "tamper-bypass");
     if (g) h += `<p class="lead" style="margin-top:12px">→ See the <b>Tamper-bypass</b> playbook in the <b>Bypass</b> tab for step-by-step hooks (signature getters, installer check, checksum, Jscrambler / CodePush).</p>`;
