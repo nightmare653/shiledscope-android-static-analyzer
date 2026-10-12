@@ -327,7 +327,7 @@
   // su, root packages, Magisk, RootBeer, SafetyNet, Play Integrity, PairIP).
   const TAMPER_IDS = ["sig-verify", "installer-check", "integrity-checksum",
     "js-tamper-protection", "codepush-signing", "native-rasp",
-    "app-shielding", "freerasp",
+    "app-shielding", "freerasp", "pairip",
     "anti-debug", "anti-frida", "anti-xposed", "emulator-check",
     "anti-frida-native", "native-emulator",
     "ios-code-integrity", "ios-js-tamper"];
@@ -364,7 +364,7 @@
         nor to run RASP / anti-debug / anti-Frida / emulator checks — repackaging, re-signing, patching and dynamic instrumentation face no in-app resistance.</div></div>`;
       return h;
     }
-    h += `<p class="lead">${mechs.length} mechanism${mechs.length>1?"s":""} detected — integrity/anti-repackaging, RASP, and anti-analysis (anti-debug / anti-Frida / emulator). These resist repackaging, re-signing, patching and dynamic instrumentation. <em>Root/jailbreak detection and attestation (SafetyNet, Play Integrity, PairIP) stay in the Protection tab.</em></p>`;
+    h += `<p class="lead">${mechs.length} mechanism${mechs.length>1?"s":""} detected — integrity/anti-repackaging, RASP (incl. PairIP's VM anti-tamper), and anti-analysis (anti-debug / anti-Frida / emulator). These resist repackaging, re-signing, patching and dynamic instrumentation. <em>Root/jailbreak detection and device attestation (SafetyNet, Play Integrity) stay in the Protection tab.</em></p>`;
     h += mechs.map(mechCard).join("");
     const g = (d.guides || []).find(x => x.id === "tamper-bypass");
     if (g) h += `<p class="lead" style="margin-top:12px">→ See the <b>Tamper-bypass</b> playbook in the <b>Bypass</b> tab for step-by-step hooks (signature getters, installer check, checksum, Jscrambler / CodePush).</p>`;
