@@ -293,6 +293,16 @@ IOS_JAILBREAK = [
         "desc": "Enumerates loaded dylibs to detect injected tweaks / hooking libraries.",
         "guides": ["frida-ios-jb", "objection-jb"],
     },
+    {
+        "id": "ios-code-integrity",
+        "name": "Code-signature / integrity self-check (anti-tamper)",
+        "category": "root", "layer": "native", "confidence": "medium", "platform": "ios",
+        "patterns": [b"SecStaticCodeCreateWithPath", b"SecCodeCheckValidity",
+                     b"SecCodeCopySelf", b"SecStaticCodeCheckValidity", b"csops"],
+        "desc": "Verifies its own code signature / executable integrity (Security.framework "
+                "SecCode APIs or the csops syscall) to detect re-signing / tampering.",
+        "guides": ["frida-ios-antidebug", "tamper-bypass"],
+    },
 ]
 
 # ---------------------------------------------------------------------------

@@ -222,9 +222,18 @@ def analyze(ipa_path):
     _IOS_TEXT = (".plist", ".json", ".mobileprovision", ".strings", ".js", ".xml",
                  ".txt", ".pem", ".cer", ".der", ".html")
     _IOS_DB = (".sqlite", ".sqlite3", ".db", ".db3")
+    js_tamper = None
     for n in names:
         low = n.lower()
         rel = n.split(app_root + "/", 1)[-1] if app_root in n else n
+        if low.endswith(".jsbundle") or "index.ios.bundle" in low:
+            try:
+                jb = z.read(n)[:64 * 1024 * 1024]
+            except Exception:
+                jb = b""
+            if js_tamper is None and b"jscrambler" in jb.lower():
+                js_tamper = "jscrambler"
+            continue
         if low.endswith(_IOS_DB):
             try:
                 b = z.read(n)[:24 * 1024 * 1024]
@@ -241,6 +250,8 @@ def analyze(ipa_path):
             secret_raw += masvs.scan_secrets(b, rel)
             crypto_raw += masvs.scan_crypto(b, rel)
             surface.scan(b, surface_acc)
+            if js_tamper is None and low.endswith(".js") and b"jscrambler" in b.lower():
+                js_tamper = "jscrambler"
         elif "/Frameworks/" in n and os.path.splitext(n)[1] == "" and not n.endswith("/"):
             try:
                 b = z.read(n)[:6 * 1024 * 1024]
@@ -248,6 +259,18 @@ def analyze(ipa_path):
                 continue
             secret_raw += masvs.scan_secrets(b, rel)
             storage.ios_scan(b, rel, storage_presence)
+
+    if js_tamper and not any(m.get("id") == "ios-js-tamper" for m in root_hits):
+        root_hits.append({
+            "id": "ios-js-tamper",
+            "name": "JavaScript tamper protection (Jscrambler)",
+            "category": "root",
+            "layer": "framework",
+            "confidence": "high",
+            "desc": "Jscrambler self-defending / anti-tamper code found in the JS bundle.",
+            "evidence": "jscrambler marker in JS bundle",
+            "guides": ["tamper-bypass"],
+        })
 
     extra = (masvs.build_secret_findings(secret_raw)
              + masvs.build_crypto_findings(crypto_raw)

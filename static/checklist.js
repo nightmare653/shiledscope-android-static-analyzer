@@ -238,6 +238,8 @@
     const o = {}, ex = d.extra || [];
     const hasId = (p) => ex.some(f => (f.id || "") === p || (f.id || "").startsWith(p));
     const catCount = (c) => ex.filter(f => f.category === c).length;
+    const rootM = (d.root && d.root.mechanisms) || [];
+    const rootHas = (id) => rootM.some(m => (m.id || "") === id);
     const meta = d.meta || {};
     if (isIOS(d)) {
       if (hasId("ios-url-scheme")) o["ios-urlscheme"] = "Custom URL scheme(s) registered.";
@@ -256,6 +258,8 @@
       if (d.ssl && d.ssl.implemented) o["ios-pinning"] = "SSL pinning present (" + d.ssl.layers + " layer(s)).";
       else if (d.ssl) o["ios-pinning"] = "No SSL pinning detected statically.";
       if (d.root && d.root.implemented) o["ios-jailbreak"] = "Jailbreak detection present (" + d.root.layers + " layer(s)).";
+      if (rootHas("ios-code-integrity") || rootHas("ios-js-tamper"))
+        o["ios-antihook"] = "Tamper/integrity protection present (" + (rootHas("ios-js-tamper") ? "Jscrambler JS" : "SecCode integrity") + ").";
       if (meta.encrypted) o["ios-encryption"] = "Binary is FairPlay-encrypted — decrypt first.";
       if (catCount("secret")) o["ios-secrets"] = catCount("secret") + " hardcoded-secret finding(s).";
       if (catCount("crypto")) o["ios-crypto-weak"] = catCount("crypto") + " weak-crypto indicator(s).";
@@ -267,6 +271,11 @@
     if (ex.some(f => (f.id || "").startsWith("trustall-"))) o["net-trustall"] = "Trust-all TrustManager detected — TLS validation disabled.";
     if (hasId("nsc-user-ca")) o["net-nsc"] = "NSC trusts user-installed CAs.";
     if (d.root && d.root.implemented) o["res-root"] = "Root detection present (" + d.root.layers + " layer(s)).";
+    {
+      const TAMPER = ["sig-verify", "installer-check", "integrity-checksum", "js-tamper-protection", "codepush-signing"];
+      const tm = rootM.filter(m => TAMPER.indexOf(m.id || "") !== -1);
+      if (tm.length) o["res-integrity"] = tm.length + " anti-tamper mechanism(s): " + tm.map(m => m.id).join(", ") + ".";
+    }
     if (d.ssl && d.ssl.implemented) o["net-pinning"] = "SSL pinning present (" + d.ssl.layers + " layer(s)).";
     else if (d.ssl) o["net-pinning"] = "No SSL pinning detected statically.";
     if (catCount("secret")) o["stor-secrets"] = catCount("secret") + " hardcoded-secret finding(s).";

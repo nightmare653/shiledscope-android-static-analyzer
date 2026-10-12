@@ -100,6 +100,36 @@ _SMALI_SIGNALS = [
       "no/promon", "com/promon", "Lcom/secneo", "com/secneo/apkwrapper",
       "com/qihoo/util/StubApp", "com/tencent/StubShell", "com/stub/StubApp",
       "com/guardsquare"]),
+    ("sig-verify", "root", "java", "high", "Signature verification / repackaging detection",
+     "The app reads its own signing certificate at runtime (SigningInfo / "
+     "getApkContentsSigners / PackageInfo.signatures) — typically to compare against a "
+     "hardcoded value and refuse to run if it was re-signed (anti-repackaging / tamper check).",
+     ["tamper-bypass", "magisk-denylist"],
+     ["->getApkContentsSigners(", "Landroid/content/pm/SigningInfo;", "->getSigningInfo(",
+      "Landroid/content/pm/PackageInfo;->signatures", "Landroid/content/pm/PackageInfo;->signingInfo",
+      "GET_SIGNING_CERTIFICATES"]),
+    ("installer-check", "root", "java", "medium", "Installer-source verification (anti-sideload)",
+     "The app checks where it was installed from (getInstallerPackageName / "
+     "getInstallSourceInfo), usually to require the Play Store and reject sideloaded/"
+     "repackaged copies.",
+     ["tamper-bypass"],
+     ["->getInstallerPackageName(", "->getInstallSourceInfo("]),
+    ("integrity-checksum", "root", "java", "medium", "Self-APK integrity / checksum check",
+     "The app reads its own APK (getPackageCodePath / ApplicationInfo.sourceDir), typically "
+     "to compute a CRC/hash of the installed package and detect tampering.",
+     ["tamper-bypass"],
+     ["->getPackageCodePath(", "Landroid/content/pm/ApplicationInfo;->sourceDir"]),
+    ("js-tamper-protection", "root", "framework", "medium", "JavaScript tamper protection (Jscrambler / self-defending JS)",
+     "Self-defending / anti-tamper JavaScript (Jscrambler or similar) is bundled — it adds "
+     "runtime integrity, anti-debugging and domain/environment locks to the JS layer "
+     "(React Native / Cordova / Capacitor / web content).",
+     ["tamper-bypass", "frida-ssl-universal"],
+     ["jscrambler", "Jscrambler", "_jscramblerPolyfill", "jscramblerTamper"]),
+    ("codepush-signing", "root", "framework", "low", "CodePush bundle code-signing",
+     "React Native CodePush with a configured public key — the over-the-air JS bundle is "
+     "signature-verified, so a tampered or MITM'd update bundle is rejected.",
+     ["tamper-bypass"],
+     ["CodePushPublicKey", "codePushPublicKey", "Lcom/microsoft/codepush"]),
 
     ("okhttp-pinner", "ssl", "java", "high", "OkHttp CertificatePinner",
      "OkHttp CertificatePinner with sha256/ public-key pins.",
@@ -535,6 +565,40 @@ def _build_auth_findings(auth, res_evidence):
                           "and re-check every privileged action on the backend.",
             "masvs": "MASVS-AUTH-2"})
     return F
+
+
+# ---------------------------------------------------------------------------
+#  JavaScript tamper protection (scans the JS bundle, not smali)
+# ---------------------------------------------------------------------------
+_JS_TAMPER = [
+    ("js-tamper-protection", [b"jscrambler", b"_jscramblerPolyfill", b"jscramblerTamper"]),
+    ("codepush-signing", [b"CodePushPublicKey", b"codePushPublicKey"]),
+]
+
+
+def _scan_js_tamper(unpacked):
+    """Scan React-Native / Cordova JS bundles for self-defending / integrity
+    markers (Jscrambler, CodePush code-signing). Returns {mechanism_id: evidence}."""
+    hits = {}
+    base = unpacked.raw_dir
+    for dp, _dn, fs in os.walk(deepscan._op(base)):
+        for fn in fs:
+            low = fn.lower()
+            if not (low.endswith((".bundle", ".jsbundle", ".js", ".hbc")) or "bundle" in low):
+                continue
+            try:
+                with open(os.path.join(dp, fn), "rb") as f:
+                    b = f.read(64 * 1024 * 1024)
+            except OSError:
+                continue
+            for mid, toks in _JS_TAMPER:
+                if mid in hits:
+                    continue
+                for t in toks:
+                    if t in b:
+                        hits[mid] = t.decode("ascii", "replace")
+                        break
+    return hits
 
 
 # ---------------------------------------------------------------------------
@@ -1006,6 +1070,13 @@ def analyze(unpacked, workers=4, target_sdk=None):
             asig = by_id.get("app-shielding")
             root.append(_mk(asig, "%s (%s)" % (lib_so, packer[1])))
         discovered["packer"] = packer[1]
+
+    # JavaScript tamper protection (markers live in the JS bundle, not smali)
+    for mid, ev in _scan_js_tamper(unpacked).items():
+        if not any(m["id"] == mid for m in root):
+            jsig = by_id.get(mid)
+            if jsig:
+                root.append(_mk(jsig, ev))
 
     # custom TrustManagers discovered behaviourally — COLLAPSE into one mechanism
     # (each library ships its own; listing them all would inflate "layers"), and

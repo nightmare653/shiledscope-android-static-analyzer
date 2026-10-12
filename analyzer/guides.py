@@ -490,6 +490,35 @@ GUIDES = {
             {"label": "strongR-frida-android", "url": "https://github.com/hzzhezhe/strongR-frida-android"},
         ],
     },
+    "tamper-bypass": {
+        "title": "Defeat tamper / signature / integrity self-checks",
+        "difficulty": "medium",
+        "needs": ["Frida", "frida-server", "Ghidra/jadx for the check logic"],
+        "steps": [
+            "Find the check: search for getApkContentsSigners / getSigningInfo / "
+            "PackageInfo.signatures (signature verification), getInstallerPackageName / "
+            "getInstallSourceInfo (installer check), or getPackageCodePath / sourceDir + "
+            "CRC32/MessageDigest (checksum).",
+            "Signature check: Frida-hook the signature getter to return the ORIGINAL signing "
+            "cert, e.g. hook PackageManager.getPackageInfo and replace the signatures/"
+            "signingInfo with the legit ones, or just hook the boolean comparison method to "
+            "return true.",
+            "Installer check: hook getInstallerPackageName / getInstallSourceInfo to return "
+            "\"com.android.vending\".",
+            "Checksum check: hook the method that computes/compares the hash to return the "
+            "expected value (or patch the smali comparison and repackage).",
+            "JavaScript (Jscrambler / self-defending JS): run with a non-pinned proxy to grab "
+            "the bundle, beautify it, and neutralise the anti-tamper/anti-debug traps; or hook "
+            "the native bridge that loads/validates the bundle. CodePush signing: point it at "
+            "your own signed bundle or disable the signature check.",
+            "Reduce friction first with Magisk DenyList + a stealth Frida so root/Frida checks "
+            "don't trip while you work.",
+        ],
+        "resources": [
+            {"label": "Frida codeshare", "url": "https://codeshare.frida.re/"},
+            {"label": "objection", "url": "https://github.com/sensepost/objection"},
+        ],
+    },
 }
 
 
