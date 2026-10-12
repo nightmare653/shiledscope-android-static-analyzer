@@ -272,7 +272,7 @@
     if (hasId("nsc-user-ca")) o["net-nsc"] = "NSC trusts user-installed CAs.";
     if (d.root && d.root.implemented) o["res-root"] = "Root detection present (" + d.root.layers + " layer(s)).";
     {
-      const TAMPER = ["sig-verify", "installer-check", "integrity-checksum", "js-tamper-protection", "codepush-signing"];
+      const TAMPER = ["sig-verify", "installer-check", "integrity-checksum", "js-tamper-protection", "codepush-signing", "native-rasp"];
       const tm = rootM.filter(m => TAMPER.indexOf(m.id || "") !== -1);
       if (tm.length) o["res-integrity"] = tm.length + " anti-tamper mechanism(s): " + tm.map(m => m.id).join(", ") + ".";
     }

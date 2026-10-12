@@ -242,6 +242,33 @@ _PACKER_SO = [
     ("libnesec", "NetEase packer"),
 ]
 
+# Native anti-tamper / anti-hook / RASP / integrity libraries, detected by their
+# .so filename (substring, case-insensitive). Distinct from _PACKER_SO (which
+# encrypt the whole DEX): these run runtime tamper / hook / root checks in native
+# code, so they survive every Java/smali hook and need a native Frida hook on the
+# .so to defeat. Kept high-signal to avoid flagging ordinary libraries.
+_RASP_SO = [
+    ("libtoolchecker", "anti-tooling / integrity checker"),
+    ("libantitamper", "native anti-tamper"),
+    ("libtampercheck", "native anti-tamper"),
+    ("libantifrida", "native anti-Frida"),
+    ("libantihook", "native anti-hooking"),
+    ("libantidebug", "native anti-debug"),
+    ("librootbeer", "RootBeer native root detection"),
+    ("libjailmonkey", "JailMonkey root/JB detection (RN)"),
+    ("libdetectfrida", "native Frida detection"),
+    ("libappsealing", "AppSealing RASP"),
+    ("libdexguard", "Guardsquare DexGuard native RASP"),
+    ("libguardsquare", "Guardsquare native RASP"),
+    ("libappdome", "Appdome RASP"),
+    ("libvkey", "V-Key V-OS RASP"),
+    ("libvosw", "V-Key V-OS RASP"),
+    ("libwhitebox", "white-box crypto / RASP"),
+    ("libinsidesecure", "Rambus / Inside Secure RASP"),
+    ("libbuildchecker", "build / environment integrity checker"),
+    ("libintegrity", "native integrity checker"),
+]
+
 
 _TM_IFACE = "Ljavax/net/ssl/X509TrustManager;"
 _HV_IFACE = "Ljavax/net/ssl/HostnameVerifier;"
@@ -1070,6 +1097,33 @@ def analyze(unpacked, workers=4, target_sdk=None):
             asig = by_id.get("app-shielding")
             root.append(_mk(asig, "%s (%s)" % (lib_so, packer[1])))
         discovered["packer"] = packer[1]
+
+    # native anti-tamper / anti-hook / RASP library by .so filename (independent,
+    # survives all Java/smali obfuscation). One collapsed mechanism listing each lib.
+    rasp = []
+    seen_rasp = set()
+    for n in so_names:
+        low = n.lower()
+        for lib, label in _RASP_SO:
+            if lib in low and lib not in seen_rasp:
+                seen_rasp.add(lib)
+                rasp.append((n, label))
+    if rasp and not any(m["id"] == "native-rasp" for m in root):
+        libs = ", ".join(sorted({r[0] for r in rasp}))
+        labels = "; ".join(sorted({r[1] for r in rasp}))
+        root.append({
+            "id": "native-rasp",
+            "name": "Native anti-tamper / RASP library",
+            "category": "root",
+            "layer": "native",
+            "confidence": "high",
+            "desc": ("A native library dedicated to runtime tamper / hook / root detection is "
+                     "bundled (%s). These checks run in C/C++ and survive Java/smali hooks — "
+                     "bypass needs a native Frida hook on the .so, not a Java hook." % labels),
+            "evidence": libs,
+            "guides": ["tamper-bypass"],
+        })
+        discovered["native_rasp"] = labels
 
     # JavaScript tamper protection (markers live in the JS bundle, not smali)
     for mid, ev in _scan_js_tamper(unpacked).items():

@@ -323,7 +323,8 @@
 
   // IDs that are anti-tamper / integrity verification (surfaced in their own tab)
   const TAMPER_IDS = ["sig-verify", "installer-check", "integrity-checksum",
-    "js-tamper-protection", "codepush-signing", "ios-code-integrity", "ios-js-tamper"];
+    "js-tamper-protection", "codepush-signing", "native-rasp",
+    "ios-code-integrity", "ios-js-tamper"];
 
   function mechCard(mech) {
     const evid = mech.evidence ? `<div class="evid">Matched: <code>${esc(mech.evidence)}</code></div>` : "";
