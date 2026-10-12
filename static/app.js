@@ -105,6 +105,9 @@
       mechBlock("Root / Jailbreak detection", "root", d.root, isApk) +
       mechBlock("SSL / Certificate pinning", "ssl", d.ssl, isApk);
 
+    const tamperHtml = tamperBlock(d, isApk);
+    const nTamper = ((d.root && d.root.mechanisms) || []).filter(m => TAMPER_IDS.indexOf(m.id || "") !== -1).length;
+
     const findingsHtml = masvsBlock(d.extra || []) || `<p class="empty">No additional findings.</p>`;
     const surfaceHtml = (ipcBlock(d.ipc || []) + apiBlock(d.api) + surfaceBlock(d.surface))
       || `<p class="empty">No attack-surface data harvested.</p>`;
@@ -122,11 +125,12 @@
 
     const nFindings = (d.extra || []).length;
     const nSurface = (d.ipc ? d.ipc.length : 0) + (d.api && d.api.counts ? (d.api.counts.total || 0) : 0);
-    const nProt = (d.root.layers || 0) + (d.ssl.layers || 0);
+    const nProt = Math.max(0, (d.root.layers || 0) - nTamper) + (d.ssl.layers || 0);
 
     const tabs = [
       { id: "overview", label: "Overview", html: overviewHtml },
       { id: "protection", label: "Protection", badge: nProt, html: protectionHtml || `<p class="empty">No root/pinning mechanisms detected.</p>` },
+      { id: "tamper", label: "Tamper", icon: "🛡️", badge: nTamper, html: tamperHtml },
       { id: "findings", label: "Findings", badge: nFindings, html: findingsHtml },
       { id: "surface", label: "Attack surface", badge: nSurface, html: surfaceHtml },
       { id: "bypass", label: "Bypass", html: bypassHtml || `<p class="empty">No bypass material.</p>` },
@@ -300,36 +304,63 @@
     const label = cls === "root"
       ? (isApk ? "Root detection" : "Jailbreak detection")
       : "SSL pinning";
+    // Anti-tamper mechanisms live in the root bucket but have their own tab —
+    // keep this block to genuine root/jailbreak detection only.
+    const mechs = cls === "root"
+      ? (bucket.mechanisms || []).filter(m => TAMPER_IDS.indexOf(m.id || "") === -1)
+      : (bucket.mechanisms || []);
     let h = `<div class="block"><h2><span class="dot ${cls}"></span>${esc(title)}</h2>`;
-    if (!bucket.implemented) {
+    if (!bucket.implemented || !mechs.length) {
       h += `<div class="empty">No ${esc(label.toLowerCase())} detected by static signatures.
         ${cls==="ssl" ? "Traffic may be interceptable with just a proxy + trusted CA." :
           "The app likely runs fine on rooted/jailbroken devices without extra work."}</div></div>`;
       return h;
     }
-    h += `<p class="lead">${bucket.layers} independent layer${bucket.layers>1?"s":""} detected.</p>`;
-    h += bucket.mechanisms.map(mech => {
-      const evid = mech.evidence ? `<div class="evid">Matched: <code>${esc(mech.evidence)}</code></div>` : "";
-      const snip = mech.config_snippet ? `<div class="evid" style="margin-top:6px">Config:<br><code style="white-space:pre-wrap;display:block;margin-top:4px">${esc(mech.config_snippet)}</code></div>` : "";
-      const ex = [];
-      if (mech.verified === true) ex.push('<span class="badge verified">✓ verified</span>');
-      if (mech.signals >= 2) ex.push(`<span class="badge">${mech.signals} signals</span>`);
-      if (mech.corroborated) ex.push('<span class="badge">corroborated</span>');
-      if (mech.unverified) ex.push('<span class="badge low">unverified</span>');
-      return `<div class="mech l-${esc(mech.layer)}">
-        <div class="mhead">
-          <span class="mname">${esc(mech.name)}</span>
-          <span class="badges">
-            <span class="badge ${esc(mech.confidence)}">${esc(mech.confidence)}</span>
-            <span class="badge layer">${esc(mech.layer)}</span>
-            ${mech.masvs ? `<span class="badge masvs">${esc(mech.masvs)}</span>` : ""}
-            ${ex.join("")}
-          </span>
-        </div>
-        <div class="mdesc">${esc(mech.desc)}</div>
-        ${evid}${snip}
-      </div>`;
-    }).join("");
+    h += `<p class="lead">${mechs.length} independent layer${mechs.length>1?"s":""} detected.</p>`;
+    h += mechs.map(mechCard).join("");
+    return h + `</div>`;
+  }
+
+  // IDs that are anti-tamper / integrity verification (surfaced in their own tab)
+  const TAMPER_IDS = ["sig-verify", "installer-check", "integrity-checksum",
+    "js-tamper-protection", "codepush-signing", "ios-code-integrity", "ios-js-tamper"];
+
+  function mechCard(mech) {
+    const evid = mech.evidence ? `<div class="evid">Matched: <code>${esc(mech.evidence)}</code></div>` : "";
+    const snip = mech.config_snippet ? `<div class="evid" style="margin-top:6px">Config:<br><code style="white-space:pre-wrap;display:block;margin-top:4px">${esc(mech.config_snippet)}</code></div>` : "";
+    const ex = [];
+    if (mech.verified === true) ex.push('<span class="badge verified">✓ verified</span>');
+    if (mech.signals >= 2) ex.push(`<span class="badge">${mech.signals} signals</span>`);
+    if (mech.corroborated) ex.push('<span class="badge">corroborated</span>');
+    if (mech.unverified) ex.push('<span class="badge low">unverified</span>');
+    return `<div class="mech l-${esc(mech.layer)}">
+      <div class="mhead">
+        <span class="mname">${esc(mech.name)}</span>
+        <span class="badges">
+          <span class="badge ${esc(mech.confidence)}">${esc(mech.confidence)}</span>
+          <span class="badge layer">${esc(mech.layer)}</span>
+          ${mech.masvs ? `<span class="badge masvs">${esc(mech.masvs)}</span>` : ""}
+          ${ex.join("")}
+        </span>
+      </div>
+      <div class="mdesc">${esc(mech.desc)}</div>
+      ${evid}${snip}
+    </div>`;
+  }
+
+  function tamperBlock(d, isApk) {
+    const mechs = ((d.root && d.root.mechanisms) || []).filter(m => TAMPER_IDS.indexOf(m.id || "") !== -1);
+    let h = `<div class="block"><h2><span class="dot root"></span>🛡️ Tamper / integrity protection</h2>`;
+    if (!mechs.length) {
+      h += `<div class="empty">No anti-tamper / integrity verification detected by static signatures.
+        The app does not appear to check its own signature, installer source, code checksum${isApk ? "" : ", SecCode validity"} or JS-bundle integrity at runtime —
+        repackaging, re-signing and code patching face no in-app resistance.</div></div>`;
+      return h;
+    }
+    h += `<p class="lead">${mechs.length} tamper/integrity mechanism${mechs.length>1?"s":""} detected. These resist repackaging, re-signing and runtime code patching.</p>`;
+    h += mechs.map(mechCard).join("");
+    const g = (d.guides || []).find(x => x.id === "tamper-bypass");
+    if (g) h += `<p class="lead" style="margin-top:12px">→ See the <b>Tamper-bypass</b> playbook in the <b>Bypass</b> tab for step-by-step hooks (signature getters, installer check, checksum, Jscrambler / CodePush).</p>`;
     return h + `</div>`;
   }
 
