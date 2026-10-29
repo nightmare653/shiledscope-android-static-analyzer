@@ -100,6 +100,39 @@ def _lief_scan(macho_bytes):
     return syms, encrypted, arch, pie
 
 
+def _symbols_via_tools(macho_bytes):
+    """Supplement LIEF with an objdump/rizin symbol + import dump of the Mach-O.
+
+    Valuable when LIEF is missing or thin, and it reads the imports table — which
+    survives FairPlay encryption — so iOS native signals (jailbreak/SSL/anti-debug
+    symbols) still match on App Store binaries. Returns a set of strings ('' -> empty)."""
+    out = set()
+    if not macho_bytes:
+        return out
+    try:
+        from . import tools as _T
+        if not _T.get_tools().have_native_symbols:
+            return out
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".macho") as tf:
+            tf.write(macho_bytes)
+            tmp = tf.name
+        try:
+            text = _T.native_symbols(tmp, timeout=120)
+        finally:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        for line in (text or "").splitlines():
+            line = line.strip()
+            if line:
+                out.add(line)
+    except Exception:
+        pass
+    return out
+
+
 def _match(sig, blob, symbols):
     pats = sig.get("patterns", [])
     if not pats:
@@ -170,6 +203,7 @@ def analyze(ipa_path):
                 pass
 
     symbols, encrypted, arch, pie = _lief_scan(macho) if macho else (set(), None, None, None)
+    symbols |= _symbols_via_tools(macho)   # objdump/rizin supplement (survives FairPlay)
     meta["encrypted"] = encrypted
     meta["arch"] = arch
     if encrypted:

@@ -641,7 +641,7 @@ def _scan_js_tamper(unpacked):
 #  native + manifest + framework
 # ---------------------------------------------------------------------------
 def _scan_native(unpacked):
-    hits, so_names = {}, []
+    hits, so_names, so_paths = {}, [], []
     base = unpacked.raw_dir
     for dp, _dn, fs in os.walk(deepscan._op(base)):
         for fn in fs:
@@ -649,6 +649,7 @@ def _scan_native(unpacked):
                 continue
             so_names.append(fn)
             ap = os.path.join(dp, fn)
+            so_paths.append(ap)
             try:
                 with open(ap, "rb") as f:
                     # Flutter/Unity/Xamarin pack all app logic into one large .so
@@ -687,7 +688,44 @@ def _scan_native(unpacked):
                         if s in b:
                             hits[sid] = s.decode("ascii", "replace")
                             break
+
+    # lightweight symbol/import pass via objdump or rizin (no Ghidra/JVM needed):
+    # matches native signals against the dynamic symbol + import table, which is
+    # cleaner and more precise than a raw-byte grep over a huge stripped blob
+    # (e.g. an imported `ptrace` / `fork` / pinning symbol that isn't a literal
+    # string elsewhere). Bounded: one binary per basename, arm64 preferred.
+    _native_symbol_scan(so_paths, hits, getattr(unpacked, "tool_log", None))
     return hits, so_names
+
+
+def _native_symbol_scan(so_paths, hits, log, cap=8, per_file_timeout=90):
+    """Run objdump/rizin symbol dumps on a bounded set of .so and fold any extra
+    _NATIVE_SIGNALS matches into `hits` (in place). No-op when neither tool exists."""
+    from . import tools as _T
+    if not _T.get_tools().have_native_symbols:
+        return
+    # dedupe by basename, prefer the arm64-v8a build of each lib
+    chosen = {}
+    for p in so_paths:
+        bn = os.path.basename(p)
+        if bn not in chosen or "arm64" in p.replace("\\", "/").lower():
+            chosen[bn] = p
+    for p in list(chosen.values())[:cap]:
+        try:
+            text = _T.native_symbols(p, timeout=per_file_timeout, log=log)
+        except Exception:
+            continue
+        if not text:
+            continue
+        b = text.encode("utf-8", "replace")
+        for sig in _NATIVE_SIGNALS:
+            sid, subs = sig[0], sig[7]
+            if sid in hits:
+                continue
+            for s in subs:
+                if s in b:
+                    hits[sid] = s.decode("ascii", "replace")
+                    break
 
 
 def _detect_frameworks(so_names, unpacked):

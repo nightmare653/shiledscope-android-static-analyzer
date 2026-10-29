@@ -56,6 +56,8 @@ signing), and LIEF (native-binary hardening checks).
 | **jadx** | DEX → Java (reconstructs constant strings) | recommended | `SHIELDSCOPE_JADX_JAR` → `jadx-*-all.jar` |
 | **dex2jar + CFR** | DEX → Java **fallback** when jadx is absent/times out | optional | `SHIELDSCOPE_DEX2JAR` → dex-tools dir · `SHIELDSCOPE_CFR_JAR` → `cfr*.jar` |
 | **Ghidra** | decompiles native `.so` to C (opt-in, heavy) | optional | `SHIELDSCOPE_GHIDRA` → Ghidra dir; enable per run with `SHIELDSCOPE_ENABLE_GHIDRA=1` |
+| **objdump** | fast `.so` / Mach-O dynamic symbol & import dump (sharpens native pinning / anti-debug / root detection without Ghidra) | optional | on `PATH` (binutils / LLVM), or `SHIELDSCOPE_OBJDUMP` |
+| **rizin** (or radare2) | `.so` / Mach-O imports + exports + symbols (objdump fallback) | optional | on `PATH`, or `SHIELDSCOPE_RIZIN` |
 | **blutter** | Flutter `libapp.so` → Dart dump | optional | `SHIELDSCOPE_BLUTTER` → `blutter.py` |
 | **hbctool** | React-Native Hermes bytecode → disasm | optional | on `PATH` (`pip install hbctool`) |
 | **frida-dexdump** | runtime-unpack a **packed** app (device needed) | optional | on `PATH` (`pip install frida-dexdump`) |
@@ -352,7 +354,7 @@ The Android path is a staged pipeline, not a byte scan:
 
 1. **Unpack** — apktool (smali + decoded resources/manifest) and jadx (Java with reconstructed strings), plus recursive extraction of nested archives. jadx is **adaptive**: on a large multidex app it only runs when the dex is small enough to finish quickly (`SHIELDSCOPE_JADX_MAXDEX_MB`, default 45), otherwise complete smali is used. Force either way with `SHIELDSCOPE_FORCE_JADX=1`/`=0`.
 2. **dex2jar + CFR fallback** — when jadx produced no Java, dex2jar → CFR recovers readable Java; **smali is still scanned alongside** (different decompilers recover different classes). Disable with `SHIELDSCOPE_DECOMPILE_FALLBACK=0`.
-3. **Ghidra (opt-in)** — decompiles native `.so` to C so native pinning/root logic and secrets become scannable (`SHIELDSCOPE_ENABLE_GHIDRA=1`).
+3. **Native `.so`** — a raw-string pass over every `.so`, plus (when present) a fast **objdump / rizin** dynamic-symbol & import dump that sharpens native pinning / root / anti-debug / anti-Frida detection on stripped blobs without a heavy decompile. **Ghidra (opt-in)** additionally decompiles native `.so` to C so native logic and secrets become scannable (`SHIELDSCOPE_ENABLE_GHIDRA=1`).
 4. **Framework deep-dive** — Flutter (`libapp.so` via blutter) and React-Native Hermes (via hbctool); Xamarin assemblies are detected and flagged.
 5. **Runtime unpack (packed apps)** — when a packer/RASP is detected and a device is connected, `POST /api/ai/frida/dexdump` dumps the decrypted DEX with frida-dexdump and re-runs the engine on it.
 
@@ -376,6 +378,8 @@ All optional; everything is auto-detected when unset.
 | `SHIELDSCOPE_GHIDRA_TIMEOUT` | `600` | Seconds per native lib. |
 | `SHIELDSCOPE_GHIDRA_MAXLIBS` | `8` | Max `.so` files to decompile. |
 | `SHIELDSCOPE_BLUTTER` | auto | Path to `blutter.py` (Flutter Dart dump). |
+| `SHIELDSCOPE_OBJDUMP` | auto | Path to objdump / llvm-objdump (native symbol dump). |
+| `SHIELDSCOPE_RIZIN` | auto | Path to rizin / radare2 (native symbol dump, objdump fallback). |
 | `SHIELDSCOPE_HEAP` | `4g` | JVM max heap for the external tools. |
 | `SHIELDSCOPE_JADX_TIMEOUT` | `600` | jadx hard timeout (s). |
 | `SHIELDSCOPE_APKTOOL_TIMEOUT` | `300` | apktool hard timeout (s). |

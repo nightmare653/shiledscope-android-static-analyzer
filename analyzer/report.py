@@ -28,7 +28,7 @@ def _sha256(path):
 
 
 # Bump when detection/scanning logic changes so the on-disk cache self-invalidates.
-_ENGINE_VERSION = "2026.10-7"
+_ENGINE_VERSION = "2026.10-8"
 
 
 def _cache_dir():

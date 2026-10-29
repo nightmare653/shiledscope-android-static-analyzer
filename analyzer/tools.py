@@ -166,6 +166,36 @@ def _find_ghidra():
     return _first_existing(cands)
 
 
+def _find_rizin():
+    """rizin (preferred) or radare2 — fast disassembler/symbol dumper for .so and
+    Mach-O. Returns the executable path or None."""
+    env = os.environ.get("SHIELDSCOPE_RIZIN")
+    if env and (os.path.isfile(env) or shutil.which(env)):
+        return env if os.path.isfile(env) else shutil.which(env)
+    for name in ("rizin", "r2", "radare2"):
+        w = shutil.which(name)
+        if w:
+            return w
+    for g in sorted(glob.glob("C:/rizin*/bin/rizin.exe")
+                    + glob.glob("C:/radare2*/bin/radare2.exe")
+                    + glob.glob("/opt/rizin*/bin/rizin")):
+        return g
+    return None
+
+
+def _find_objdump():
+    """GNU objdump / llvm-objdump / gobjdump — quick symbol & disasm dump for ELF
+    (.so) and Mach-O. Returns the executable path or None."""
+    env = os.environ.get("SHIELDSCOPE_OBJDUMP")
+    if env and (os.path.isfile(env) or shutil.which(env)):
+        return env if os.path.isfile(env) else shutil.which(env)
+    for name in ("objdump", "llvm-objdump", "gobjdump"):
+        w = shutil.which(name)
+        if w:
+            return w
+    return None
+
+
 def _find_blutter():
     """blutter is a python script; return the path to blutter.py or None."""
     env = os.environ.get("SHIELDSCOPE_BLUTTER")
@@ -195,6 +225,8 @@ class Tools:
         self.frida_dexdump = shutil.which("frida-dexdump")
         self.blutter = _find_blutter()          # Flutter libapp.so -> Dart dump
         self.hbctool = shutil.which("hbctool")  # React Native Hermes disassembler
+        self.rizin = _find_rizin()              # .so / Mach-O symbols + disasm
+        self.objdump = _find_objdump()          # .so / Mach-O symbols + disasm
         self.heap = os.environ.get("SHIELDSCOPE_HEAP", "4g")
 
     @property
@@ -238,6 +270,19 @@ class Tools:
     def have_hbctool(self):
         return bool(self.hbctool)
 
+    @property
+    def have_rizin(self):
+        return bool(self.rizin)
+
+    @property
+    def have_objdump(self):
+        return bool(self.objdump)
+
+    @property
+    def have_native_symbols(self):
+        # either lightweight native symbol dumper (no JVM / Ghidra needed)
+        return bool(self.objdump or self.rizin)
+
     def summary(self):
         return {
             "java": self.java, "jadx_jar": self.jadx_jar,
@@ -245,9 +290,12 @@ class Tools:
             "dex2jar_lib": self.dex2jar_lib, "cfr_jar": self.cfr_jar,
             "ghidra": self.ghidra, "frida_dexdump": self.frida_dexdump,
             "blutter": self.blutter, "hbctool": self.hbctool,
+            "rizin": self.rizin, "objdump": self.objdump,
             "have_jadx": self.have_jadx, "have_apktool": self.have_apktool,
             "have_decompiler_fallback": self.have_decompiler_fallback,
             "have_ghidra": self.have_ghidra,
+            "have_rizin": self.have_rizin, "have_objdump": self.have_objdump,
+            "have_native_symbols": self.have_native_symbols,
         }
 
 
@@ -403,6 +451,49 @@ def hbctool_disasm(bundle_path, out_dir, timeout, log=None):
     t = get_tools()
     cmd = [t.hbctool, "disasm", bundle_path, out_dir]
     return run(cmd, timeout=timeout, log=log)
+
+
+def objdump_symbols(bin_path, timeout, log=None):
+    """Dynamic symbol / import table of an ELF (.so) or Mach-O via objdump.
+
+    `-T` is the dynamic symbol table (imports + exports) — fast, no full disasm —
+    which surfaces calls like ptrace / fork / __system_property_get and pinning
+    symbols that a raw-byte string grep can miss or mis-attribute. llvm-objdump
+    accepts the same flag. Returns a RunResult (text in .out)."""
+    t = get_tools()
+    base = os.path.basename(t.objdump or "").lower()
+    # llvm-objdump prefers --dynamic-syms / --syms; GNU objdump uses -T -t
+    if "llvm-objdump" in base:
+        cmd = [t.objdump, "--dynamic-syms", "--demangle", bin_path]
+    else:
+        cmd = [t.objdump, "-T", "-C", bin_path]
+    return run(cmd, timeout=timeout, log=log)
+
+
+def rizin_symbols(bin_path, timeout, log=None):
+    """Imports + exports + symbols of an ELF (.so) or Mach-O via rizin/radare2.
+
+    ii = imports, iE = exports, is = symbols. `-q` runs the commands and quits
+    (no interactive prompt); `-e bin.relocs.apply=false` keeps it quick. radare2
+    accepts the same commands. Returns a RunResult (text in .out)."""
+    t = get_tools()
+    cmd = [t.rizin, "-q", "-e", "scr.color=0", "-c", "ii;iE;is", bin_path]
+    return run(cmd, timeout=timeout, log=log)
+
+
+def native_symbols(bin_path, timeout, log=None):
+    """Prefer objdump (fast, ubiquitous), fall back to rizin. Returns symbol/import
+    text as a string ('' if neither tool is available or both fail)."""
+    t = get_tools()
+    if t.have_objdump:
+        r = objdump_symbols(bin_path, timeout, log=log)
+        if r.ok and r.out.strip():
+            return r.out
+    if t.have_rizin:
+        r = rizin_symbols(bin_path, timeout, log=log)
+        if r.ok and r.out.strip():
+            return r.out
+    return ""
 
 
 def _find_python():
