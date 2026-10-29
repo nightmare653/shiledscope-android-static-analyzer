@@ -737,6 +737,86 @@ def _detect_frameworks(so_names, unpacked):
     return fws
 
 
+# For cross-platform frameworks the app's real source language is the framework's,
+# not the thin Java/Kotlin host shim — map it so we report Dart/C#/JS, not Kotlin.
+_FRAMEWORK_LANG = {
+    "flutter": "Dart (Flutter)",
+    "react-native": "JavaScript / TypeScript (React Native)",
+    "xamarin": "C# / .NET (Xamarin / MAUI)",
+    "unity": "C# (Unity / IL2CPP)",
+    "capacitor": "JavaScript / HTML (Capacitor hybrid)",
+    "cordova": "JavaScript / HTML (Cordova hybrid)",
+    "ionic": "JavaScript / HTML (Ionic hybrid)",
+}
+
+
+def _detect_language(unpacked, so_names, frameworks, package=None):
+    """Report the app's primary source language / build.
+
+    For a cross-platform framework the language is the framework's (Dart/C#/JS).
+    For a native Android app we distinguish Kotlin vs Java by the @kotlin.Metadata
+    annotation the Kotlin compiler stamps on every Kotlin class — measured over the
+    app's OWN package classes (not bundled libraries, most of which are Kotlin now)."""
+    # Cross-platform build wins — its host Java/Kotlin shim is not the app's language.
+    if frameworks:
+        fid = frameworks[0].get("id")
+        return {"primary": _FRAMEWORK_LANG.get(fid, frameworks[0].get("name", "cross-platform")),
+                "kind": "framework", "framework": fid, "kotlin_pct": None,
+                "detail": "cross-platform framework - native Android host is a thin shim"}
+
+    base = deepscan._op(unpacked.raw_dir)
+    pkg_path = ("/" + package.replace(".", "/") + "/") if package else None
+    total = kot = 0
+    kotlin_module = kotlin_runtime = False
+    for dp, _dn, fs in os.walk(base):
+        norm = dp.replace("\\", "/").lower()
+        for fn in fs:
+            low = fn.lower()
+            if low.endswith(".kotlin_module"):
+                kotlin_module = True
+                continue
+            if not low.endswith(".smali"):
+                continue
+            if ("/kotlin/" in norm or "/kotlinx/" in norm
+                    or norm.endswith("/kotlin") or norm.endswith("/kotlinx")):
+                kotlin_runtime = True
+            # scope the ratio to the app's own package when we know it
+            if pkg_path and pkg_path not in (norm + "/"):
+                continue
+            total += 1
+            try:
+                with open(os.path.join(dp, fn), "rb") as f:
+                    head = f.read(1600)
+            except OSError:
+                continue
+            if b"Lkotlin/Metadata;" in head:
+                kot += 1
+
+    pct = (100.0 * kot / total) if total else None
+    if total >= 30 and pct is not None:
+        if pct >= 65:
+            primary = "Kotlin"
+        elif pct <= 10:
+            primary = "Java"
+        else:
+            primary = "Java / Kotlin (mixed)"
+        detail = "%d%% of %d app classes carry Kotlin metadata" % (round(pct), total)
+    else:
+        # too few app-owned classes to sample (heavily minified / relocated): fall
+        # back to presence of the Kotlin runtime / module metadata.
+        if kotlin_module or kotlin_runtime:
+            primary = "Kotlin / mixed"
+            detail = "Kotlin runtime bundled; app classes minified/relocated so the ratio couldn't be sampled"
+        else:
+            primary = "Java"
+            detail = "no Kotlin markers found"
+    return {"primary": primary, "kind": "native", "framework": None,
+            "kotlin_pct": round(pct) if pct is not None else None,
+            "kotlin_classes": kot, "app_classes": total,
+            "kotlin_runtime": kotlin_runtime, "kotlin_module": kotlin_module,
+            "detail": detail}
+
+
 def _scan_nsc(unpacked):
     """Decoded network_security_config: look for <pin-set> and cleartext flags."""
     has_pin, cleartext, snippet = False, None, None
@@ -1088,7 +1168,7 @@ def _mk(sig, evidence, extra=None):
     return m
 
 
-def analyze(unpacked, workers=4, target_sdk=None):
+def analyze(unpacked, workers=4, target_sdk=None, package=None):
     smali_hits, custom_tms, auth_signals = _scan_smali(unpacked, workers)
     auth_findings = _build_auth_findings(auth_signals, _scan_auth_resources(unpacked))
     # pull synthetic code-taint signals out before the mechanism loop
@@ -1103,6 +1183,7 @@ def analyze(unpacked, workers=4, target_sdk=None):
     misc += _native_hardening(unpacked)
     misc += _build_hygiene_findings(hyg, _scan_keyboard_cache(unpacked))
     frameworks = _detect_frameworks(so_names, unpacked)
+    language = _detect_language(unpacked, so_names, frameworks, package)
     has_pin, cleartext, snippet = _scan_nsc(unpacked)
     obf = _obfuscation(unpacked)
 
@@ -1248,6 +1329,7 @@ def analyze(unpacked, workers=4, target_sdk=None):
         "auth": auth_findings,
         "misc": misc,
         "frameworks": frameworks,
+        "language": language,
         "notes": notes,
         "obfuscation": obf,
         "discovered": discovered,

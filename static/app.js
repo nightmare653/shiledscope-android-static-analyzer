@@ -80,6 +80,7 @@
         <div class="card">
           <h2>${isApk ? "APK" : "IPA"} · ${esc(d.file.name)}</h2>
           ${metaRows.map(([k,v]) => `<div class="metaline"><span class="k">${esc(k)}</span><span class="v">${esc(v==null?"—":String(v))}</span></div>`).join("")}
+          ${langLine(d)}
           <div class="metaline"><span class="k">SHA-256</span><span class="v" style="font-size:11px">${esc(d.file.sha256)}</span></div>
         </div>
         <div class="card">
@@ -184,6 +185,16 @@
       <span>🔑 Signing: <b>${esc(scheme)}</b> · ${esc(key)}${flag}</span>
       ${s.subject ? `<div class="signsub">${esc(s.subject)}</div>` : ""}
     </div>`;
+  }
+
+  function langLine(d) {
+    const l = d.language;
+    if (!l || !l.primary) return "";
+    const prefix = (l.kind === "native") ? "native Android · " : "";
+    const label = esc(prefix + l.primary);
+    const det = l.detail ? ` title="${esc(l.detail)}"` : "";
+    const pct = (l.kotlin_pct != null) ? ` <span class="rlabel" style="display:inline">${l.kotlin_pct}% Kotlin</span>` : "";
+    return `<div class="metaline"${det}><span class="k">Language / build</span><span class="v">${label}${pct}</span></div>`;
   }
 
   function engineMini(d) {

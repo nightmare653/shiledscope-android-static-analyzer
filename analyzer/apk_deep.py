@@ -120,9 +120,11 @@ def analyze(apk_path, workdir):
             manifest_fallback_used = True
 
     workers = max(2, min(8, (os.cpu_count() or 4)))
+    pkg = (meta or {}).get("package")
 
     # detection (smali/native/manifest)
-    det = detect_mod.analyze(up, workers=workers, target_sdk=(meta or {}).get("target_sdk"))
+    det = detect_mod.analyze(up, workers=workers, target_sdk=(meta or {}).get("target_sdk"),
+                             package=pkg)
 
     # exhaustive secrets
     raw_hits, scanned = deepscan.scan(up, workers=workers)
@@ -131,7 +133,6 @@ def analyze(apk_path, workdir):
     # surface / storage / weak-crypto / bundled dbs over raw code
     surface_acc, storage_presence, crypto_raw, dbs = _raw_code_scan(up)
 
-    pkg = (meta or {}).get("package")
     sign_meta, sign_findings = signing_mod.analyze(a, (meta or {}).get("min_sdk"))
 
     if manifest_fallback_used:
@@ -161,6 +162,7 @@ def analyze(apk_path, workdir):
         "surface": surface_mod.finalize(surface_acc),
         "ipc": surface_mod.ipc(a_manifest, pkg),
         "frameworks": det["frameworks"],
+        "language": det.get("language"),
         "extra": extra,
         "root": det["root"],
         "ssl": det["ssl"],
