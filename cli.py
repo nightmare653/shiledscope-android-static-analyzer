@@ -122,9 +122,38 @@ def _fmt_size(n):
         n /= 1024.0
 
 
+def _print_tool_status(rs, to=sys.stdout):
+    """Render the tool-readiness report (present/missing + accuracy + install steps)."""
+    col = {"ready": green, "partial": yellow, "insufficient": red}.get(rs["level"], str)
+    print(bold("\nShieldScope — tool readiness"), file=to)
+    print(col("  %s" % rs["headline"]), file=to)
+    print(dim("  " + rs["detail"]), file=to)
+    print("", file=to)
+    tier_order = {"required": 0, "recommended": 1, "optional": 2}
+    for r in sorted(rs["tools"], key=lambda x: (tier_order.get(x["tier"], 9), x["label"])):
+        mark = green("present") if r["present"] else (red("MISSING") if r["tier"] == "required"
+                                                       else yellow("missing"))
+        print("  [%s] %-20s %s" % (mark, r["label"], dim("(%s · %s)" % (r["tier"], r["purpose"]))),
+              file=to)
+    missing = [r for r in rs["tools"] if not r["present"]]
+    if missing:
+        print(bold("\n  Install steps (for this OS):"), file=to)
+        for r in sorted(missing, key=lambda x: tier_order.get(x["tier"], 9)):
+            if r["install"]:
+                tier = red("REQUIRED") if r["tier"] == "required" else (
+                    yellow("recommended") if r["tier"] == "recommended" else dim("optional"))
+                print("    - %s [%s]:" % (bold(r["label"]), tier), file=to)
+                print("        %s" % r["install"], file=to)
+    else:
+        print(green("\n  All tools present — nothing to install."), file=to)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="shieldscope", description="Deep static analyzer for APK/IPA.")
-    ap.add_argument("target", help="path to an .apk / .ipa / .ab / .tar / .zip")
+    ap.add_argument("target", nargs="?", help="path to an .apk / .ipa / .ab / .tar / .zip")
+    ap.add_argument("--check-tools", action="store_true",
+                    help="check which analysis tools are installed, whether output will be "
+                         "accurate, and print install steps for anything missing — then exit")
     ap.add_argument("--json", metavar="FILE", help="write the full result as JSON")
     ap.add_argument("--keep-decompiled", action="store_true",
                     help="keep the decompiled tree (smali/java/res) and print its path")
@@ -136,11 +165,24 @@ def main(argv=None):
                          "confirm which are LIVE (network; authorized testing only)")
     args = ap.parse_args(argv)
 
+    if args.check_tools:
+        from analyzer import tool_readiness
+        _print_tool_status(tool_readiness())
+        return 0
+
+    if not args.target:
+        ap.error("a target file is required (or use --check-tools)")
     if not os.path.isfile(args.target):
         print(red("error: no such file: %s" % args.target), file=sys.stderr)
         return 2
 
     if not args.quiet:
+        from analyzer import tool_readiness
+        rs = tool_readiness()
+        if rs["level"] != "ready":
+            col = yellow if rs["level"] == "partial" else red
+            print(col("⚠ tool readiness: %s" % rs["headline"]), file=sys.stderr)
+            print(dim("  run `shieldscope --check-tools` for details & install steps"), file=sys.stderr)
         print(dim("Analyzing %s … (large apps take several minutes)" % os.path.basename(args.target)),
               file=sys.stderr, flush=True)
     r = analyze_file(args.target, original_name=os.path.basename(args.target),

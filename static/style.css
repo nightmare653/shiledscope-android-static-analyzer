@@ -323,3 +323,30 @@ body.ai-on .aiplan{display:block}
 .ck-note{display:block;width:calc(100% - 28px);margin:0 14px 12px;background:#0a0e13;border:1px solid var(--line);border-radius:8px;
   color:var(--txt);font:13px/1.5 ui-monospace,monospace;padding:8px 10px;resize:vertical}
 @media(max-width:620px){.ck-row{flex-wrap:wrap}.ck-note{width:calc(100% - 28px)}}
+
+/* ---- tool readiness banner ---- */
+.toolstatus{margin:0 0 16px}
+.ts-banner{border:1px solid var(--line);border-left-width:4px;border-radius:10px;background:var(--panel);padding:12px 14px}
+.ts-banner.ts-ready{border-left-color:var(--ok)}
+.ts-banner.ts-partial{border-left-color:var(--warn)}
+.ts-banner.ts-insufficient{border-left-color:var(--bad)}
+.ts-top{display:flex;align-items:flex-start;gap:12px}
+.ts-icon{font-size:20px;line-height:1.2}
+.ts-msg{flex:1;min-width:0}
+.ts-msg strong{font-size:14px}
+.ts-detail{color:var(--muted);font-size:12.5px;margin-top:3px}
+.ts-toggle{flex:none}
+.ts-more{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+.ts-list h4{margin:0 0 8px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted)}
+.ts-row{margin:0 0 10px}
+.ts-head{font-size:13px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ts-why{color:var(--muted);font-size:12px}
+.ts-tier{font-size:10px;padding:1px 7px;border-radius:10px;text-transform:uppercase;letter-spacing:.4px;border:1px solid var(--line);color:var(--muted)}
+.ts-tier.ts-required{color:#2a0a0a;background:var(--bad);border-color:var(--bad)}
+.ts-tier.ts-recommended{color:#3a2600;background:var(--warn);border-color:var(--warn)}
+.ts-install{display:flex;align-items:center;gap:8px;margin:5px 0 0 2px}
+.ts-install code{flex:1;min-width:0;overflow-x:auto;white-space:pre;background:#0a0e13;border:1px solid var(--line);border-radius:7px;padding:6px 9px;font:12px/1.4 ui-monospace,monospace;color:var(--txt)}
+.ts-present{margin-top:10px;font-size:12px;color:var(--muted)}
+.ts-ok{color:var(--ok)}
+.ts-ok::before{content:"✓ "}
+@media(max-width:620px){.ts-install{flex-wrap:wrap}.ts-install code{width:100%}}

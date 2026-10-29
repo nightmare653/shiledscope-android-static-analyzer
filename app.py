@@ -74,6 +74,14 @@ def health():
     return jsonify({"ok": True, "service": "shieldscope"})
 
 
+@app.route("/api/tools")
+def api_tools():
+    """Tool-readiness report: which analysis tools are present, whether the output
+    will be accurate, and install steps for anything missing."""
+    from analyzer import tool_readiness
+    return jsonify(tool_readiness())
+
+
 # ---------------------------------------------------------------------------
 #  OPTIONAL AI layer (additive; off unless configured). Never touches analysis.
 # ---------------------------------------------------------------------------

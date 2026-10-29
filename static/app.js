@@ -841,4 +841,54 @@ ${(d.ipc && d.ipc.length) ? `<h2>Exported IPC (${d.ipc.length})</h2><table><tr><
   window.ShieldScope = { render };
   initAI();
   initChat();
+  initToolStatus();
+
+  // ---- tool readiness banner (shown before scanning) ----
+  async function initToolStatus() {
+    const el = $("#toolStatus");
+    if (!el) return;
+    let rs;
+    try {
+      rs = await (await fetch("/api/tools")).json();
+    } catch (e) { return; }
+    if (!rs || !rs.level) return;
+    renderToolStatus(el, rs);
+  }
+
+  function renderToolStatus(el, rs) {
+    const icon = { ready: "✅", partial: "⚠️", insufficient: "⛔" }[rs.level] || "ℹ️";
+    const missing = (rs.tools || []).filter(t => !t.present);
+    const present = (rs.tools || []).filter(t => t.present);
+    const tierBadge = (t) => `<span class="ts-tier ts-${t.tier}">${t.tier}</span>`;
+    let body = "";
+    if (missing.length) {
+      body += `<div class="ts-list"><h4>Missing — install to improve accuracy</h4>` +
+        missing.map(t => `<div class="ts-row">
+            <div class="ts-head">${tierBadge(t)} <strong>${esc(t.label)}</strong> <span class="ts-why">${esc(t.impact)}</span></div>
+            ${t.install ? `<div class="ts-install"><code>${esc(t.install)}</code><button class="mini ts-copy" data-cmd="${esc(t.install)}">copy</button></div>` : ""}
+          </div>`).join("") + `</div>`;
+    }
+    if (present.length) {
+      body += `<div class="ts-present">Present: ${present.map(t => `<span class="ts-ok">${esc(t.label)}</span>`).join(" ")}</div>`;
+    }
+    el.innerHTML = `
+      <div class="ts-banner ts-${rs.level}">
+        <div class="ts-top">
+          <span class="ts-icon">${icon}</span>
+          <div class="ts-msg"><strong>${esc(rs.headline)}</strong><div class="ts-detail">${esc(rs.detail)}</div></div>
+          ${missing.length ? `<button class="mini ts-toggle">details</button>` : ""}
+        </div>
+        <div class="ts-more hidden">${body}</div>
+      </div>`;
+    el.classList.remove("hidden");
+    const toggle = el.querySelector(".ts-toggle"), more = el.querySelector(".ts-more");
+    if (toggle && more) toggle.addEventListener("click", () => {
+      more.classList.toggle("hidden");
+      toggle.textContent = more.classList.contains("hidden") ? "details" : "hide";
+    });
+    el.querySelectorAll(".ts-copy").forEach(b =>
+      b.addEventListener("click", () => copy(b.dataset.cmd, b)));
+    // insufficient readiness is important — open it by default
+    if (rs.level === "insufficient" && more) { more.classList.remove("hidden"); if (toggle) toggle.textContent = "hide"; }
+  }
 })();

@@ -310,6 +310,136 @@ def get_tools():
 
 
 # ---------------------------------------------------------------------------
+#  readiness / "will the output be accurate?" report
+# ---------------------------------------------------------------------------
+def _have_module(mod):
+    try:
+        import importlib.util
+        return importlib.util.find_spec(mod) is not None
+    except Exception:
+        return False
+
+
+# per-tool install hints, keyed by platform (win / linux / mac)
+_INSTALL = {
+    "java": {"win": "winget install EclipseAdoptium.Temurin.17.JDK",
+             "linux": "sudo apt install openjdk-17-jre",
+             "mac": "brew install temurin17"},
+    "apktool": {"win": "Download apktool.jar + the wrapper from apktool.org, then set SHIELDSCOPE_APKTOOL_JAR to apktool.jar",
+                "linux": "sudo apt install apktool  (or download apktool.jar)",
+                "mac": "brew install apktool"},
+    "jadx": {"win": "Download jadx from github.com/skylot/jadx/releases, then set SHIELDSCOPE_JADX_JAR to jadx-*-all.jar",
+             "linux": "sudo apt install jadx  (or download from github.com/skylot/jadx)",
+             "mac": "brew install jadx"},
+    "fallback": {"win": "Download dex-tools + cfr.jar; set SHIELDSCOPE_DEX2JAR to the dex-tools dir and SHIELDSCOPE_CFR_JAR to cfr*.jar",
+                 "linux": "Download dex-tools + cfr.jar; set SHIELDSCOPE_DEX2JAR and SHIELDSCOPE_CFR_JAR",
+                 "mac": "Download dex-tools + cfr.jar; set SHIELDSCOPE_DEX2JAR and SHIELDSCOPE_CFR_JAR"},
+    "androguard": {"win": "pip install androguard", "linux": "pip install androguard", "mac": "pip install androguard"},
+    "lief": {"win": "pip install lief", "linux": "pip install lief", "mac": "pip install lief"},
+    "native_symbols": {"win": "winget install LLVM.LLVM   (objdump)   — or —   winget install rizinorg.rizin",
+                       "linux": "sudo apt install binutils   (objdump)   — or —   sudo apt install rizin",
+                       "mac": "brew install llvm   (objdump)   — or —   brew install rizin"},
+    "ghidra": {"win": "Download Ghidra (ghidra-sre.org), set SHIELDSCOPE_GHIDRA to its dir, and enable per run with SHIELDSCOPE_ENABLE_GHIDRA=1",
+               "linux": "Download Ghidra, set SHIELDSCOPE_GHIDRA, enable with SHIELDSCOPE_ENABLE_GHIDRA=1",
+               "mac": "Download Ghidra, set SHIELDSCOPE_GHIDRA, enable with SHIELDSCOPE_ENABLE_GHIDRA=1"},
+    "blutter": {"win": "Clone github.com/worawit/blutter, then set SHIELDSCOPE_BLUTTER to blutter.py",
+                "linux": "Clone github.com/worawit/blutter, set SHIELDSCOPE_BLUTTER to blutter.py",
+                "mac": "Clone github.com/worawit/blutter, set SHIELDSCOPE_BLUTTER to blutter.py"},
+    "hbctool": {"win": "pip install hbctool", "linux": "pip install hbctool", "mac": "pip install hbctool"},
+    "frida_dexdump": {"win": "pip install frida-dexdump", "linux": "pip install frida-dexdump", "mac": "pip install frida-dexdump"},
+}
+
+
+def _current_os():
+    if _IS_WIN:
+        return "win"
+    if sys.platform == "darwin":
+        return "mac"
+    return "linux"
+
+
+def readiness():
+    """Report which tools are present and whether the scan will be accurate.
+
+    Returns {platform_os, level, headline, detail, tools:[{key,label,purpose,tier,
+    present,impact,install}], missing_required, missing_recommended}. `level` is
+    one of: ready / partial / insufficient."""
+    t = get_tools()
+    have_androguard = _have_module("androguard")
+    have_lief = _have_module("lief")
+    cur = _current_os()
+
+    def row(key, label, purpose, tier, present, impact):
+        return {"key": key, "label": label, "purpose": purpose, "tier": tier,
+                "present": bool(present), "impact": impact,
+                "install": _INSTALL.get(key, {}).get(cur, ""),
+                "install_all": _INSTALL.get(key, {})}
+
+    rows = [
+        row("java", "Java (JRE/JDK 17+)", "runs apktool / jadx / dex2jar / CFR",
+            "required", t.have_java,
+            "Without Java the deep Android engine can't run at all."),
+        row("apktool", "apktool", "smali + decoded manifest & resources",
+            "recommended", t.have_apktool,
+            "Manifest/IPC/resource findings and smali detection are degraded."),
+        row("jadx", "jadx", "DEX -> Java with reconstructed strings",
+            "recommended", t.have_jadx,
+            "Best string/secret recovery; without it coverage leans on smali/fallback."),
+        row("fallback", "dex2jar + CFR", "DEX -> Java fallback when jadx is absent",
+            "optional", t.have_decompiler_fallback,
+            "Secondary decompiler path; smali still scanned without it."),
+        row("androguard", "androguard (pip)", "signing certificate + manifest reads",
+            "recommended", have_androguard,
+            "Signing-scheme / certificate checks and some manifest reads are unavailable."),
+        row("lief", "LIEF (pip)", "Mach-O / ELF parsing + binary hardening flags",
+            "recommended", have_lief,
+            "iOS Mach-O parsing and native hardening (NX/PIE/canary) checks are limited."),
+        row("native_symbols", "objdump or rizin", "native .so / Mach-O symbol & import analysis",
+            "optional", t.have_native_symbols,
+            "Native pinning / anti-debug / root detection on stripped blobs is less precise."),
+        row("ghidra", "Ghidra", "native .so -> C decompile (opt-in, heavy)",
+            "optional", t.have_ghidra,
+            "Deep native logic/secret recovery is skipped (raw strings + symbols still scanned)."),
+        row("blutter", "blutter", "Flutter libapp.so -> Dart dump",
+            "optional", t.have_blutter,
+            "Flutter apps are fingerprinted but their Dart code isn't dumped."),
+        row("hbctool", "hbctool (pip)", "React-Native Hermes bytecode -> disasm",
+            "optional", t.have_hbctool,
+            "React-Native Hermes bundles aren't disassembled."),
+        row("frida_dexdump", "frida-dexdump", "runtime-unpack a packed app (device needed)",
+            "optional", t.have_frida_dexdump,
+            "Packed/encrypted DEX can't be dumped for re-analysis."),
+    ]
+
+    missing_required = [r for r in rows if r["tier"] == "required" and not r["present"]]
+    missing_recommended = [r for r in rows if r["tier"] == "recommended" and not r["present"]]
+    core_ok = t.have_java and (t.have_apktool or t.have_jadx or t.have_decompiler_fallback)
+
+    if not core_ok or missing_required:
+        level = "insufficient"
+        headline = "Not ready — output will be minimal / inaccurate"
+        detail = ("Required tooling is missing, so the deep engine can't decompile the app. "
+                  "Install the items marked REQUIRED below, then re-scan.")
+    elif missing_recommended:
+        level = "partial"
+        names = ", ".join(r["label"] for r in missing_recommended)
+        headline = "Mostly ready — some accuracy reduced"
+        detail = ("Core analysis will run, but these recommended tools are missing: %s. "
+                  "Findings stay reliable where they fire; the impacted areas above will be "
+                  "thinner. Optional tools further improve native/framework depth." % names)
+    else:
+        level = "ready"
+        headline = "Ready — full static accuracy"
+        detail = ("All required and recommended tools are present. Optional tools, if any are "
+                  "missing, only affect deep native/framework extraction, not core accuracy.")
+
+    return {"platform_os": cur, "level": level, "headline": headline, "detail": detail,
+            "tools": rows,
+            "missing_required": [r["key"] for r in missing_required],
+            "missing_recommended": [r["key"] for r in missing_recommended]}
+
+
+# ---------------------------------------------------------------------------
 #  bounded subprocess runner
 # ---------------------------------------------------------------------------
 class RunResult:

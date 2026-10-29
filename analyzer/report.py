@@ -17,6 +17,7 @@ from . import ipa as ipa_mod
 from . import guides as guides_mod
 from . import frida_gen
 from . import datadir as datadir_mod
+from . import tools as tools_mod
 
 
 def _sha256(path):
@@ -292,6 +293,7 @@ def analyze_file(path, original_name=None, keep_workdir=False, validate_secrets=
                               "size": os.path.getsize(path), "sha256": _sha256(path),
                               "type": "datadir"}
             _map_masvs(result)
+            result["tool_status"] = tools_mod.readiness()
         return result
 
     sha = _sha256(path)
@@ -300,6 +302,7 @@ def analyze_file(path, original_name=None, keep_workdir=False, validate_secrets=
         cached = _cache_load(sha)
         if cached is not None:
             cached.setdefault("file", {})["name"] = original_name or os.path.basename(path)
+            cached["tool_status"] = tools_mod.readiness()   # reflect current env, not cache time
             _post_validate(cached, validate_secrets)
             return cached
 
@@ -348,5 +351,6 @@ def analyze_file(path, original_name=None, keep_workdir=False, validate_secrets=
     result["ok"] = True
     if cache_on:
         _cache_store(sha, result)
+    result["tool_status"] = tools_mod.readiness()
     _post_validate(result, validate_secrets)
     return result
